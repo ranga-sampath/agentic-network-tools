@@ -1,0 +1,275 @@
+{
+  "capture_summary": {
+    "file": "kitchen_sink.pcap",
+    "total_packets": 134,
+    "duration_seconds": 14.978,
+    "avg_packets_per_second": 8.9,
+    "protocols_present": [
+      "ARP",
+      "ICMP",
+      "TCP",
+      "DNS"
+    ]
+  },
+  "arp": {
+    "total_requests": 7,
+    "total_replies": 9,
+    "unanswered_requests": [
+      {
+        "ip": "10.0.0.99",
+        "count": 3
+      }
+    ],
+    "gratuitous_arp_count": 1,
+    "duplicate_ip_alerts": [
+      {
+        "ip": "10.0.0.5",
+        "macs": [
+          "aa:bb:cc:dd:ee:05",
+          "ff:ee:dd:cc:bb:aa"
+        ],
+        "sample_frames": [
+          7,
+          10
+        ]
+      }
+    ]
+  },
+  "icmp": {
+    "echo_pairs_matched": 13,
+    "echo_unmatched": 0,
+    "rtt_ms": {
+      "min": 5.0,
+      "median": 5.0,
+      "p95": 300.0,
+      "max": 300.0
+    },
+    "anomalies": [
+      {
+        "seq": 50,
+        "rtt_ms": 300.0,
+        "frame": 37
+      },
+      {
+        "seq": 51,
+        "rtt_ms": 300.0,
+        "frame": 39
+      },
+      {
+        "seq": 52,
+        "rtt_ms": 300.0,
+        "frame": 41
+      }
+    ],
+    "type_distribution": {
+      "echo_request": 13,
+      "echo_reply": 13,
+      "dest_unreachable": 3,
+      "time_exceeded": 2
+    },
+    "unreachable_details": [
+      {
+        "src": "10.0.0.254",
+        "dst": "10.0.0.1",
+        "code": 1,
+        "code_meaning": "Host Unreachable",
+        "count": 3,
+        "sample_frame": 43
+      }
+    ],
+    "ttl_exceeded_sources": [
+      {
+        "src": "172.16.0.1",
+        "count": 2,
+        "sample_frame": 46
+      }
+    ]
+  },
+  "tcp": {
+    "streams_total": 2,
+    "retransmissions_total": 5,
+    "rst_count": 1,
+    "duplicate_ack_total": 0,
+    "out_of_order_total": 0,
+    "zero_window_total": 0,
+    "connection_stats": {
+      "syn_sent": 2,
+      "syn_ack_received": 2,
+      "handshakes_completed": 2,
+      "handshake_success_rate_pct": 100.0,
+      "rst_teardowns": 1,
+      "fin_teardowns": 1
+    },
+    "streams_with_issues": [
+      {
+        "stream_id": 0,
+        "src": "10.0.0.1:40000",
+        "dst": "10.0.0.2:80",
+        "retransmissions": 0,
+        "duplicate_acks": 0,
+        "out_of_order": 0,
+        "zero_window_events": 0,
+        "rst": false,
+        "ack_rtt_ms": {
+          "min": 1.0,
+          "median": 5.0,
+          "p95": 5.0,
+          "max": 5.0
+        },
+        "delta_ms": {
+          "min": 0.0,
+          "median": 1.0,
+          "p95": 5.0,
+          "max": 5.0
+        },
+        "sample_frames": []
+      },
+      {
+        "stream_id": 1,
+        "src": "10.0.0.1:40001",
+        "dst": "10.0.0.2:80",
+        "retransmissions": 5,
+        "duplicate_acks": 0,
+        "out_of_order": 0,
+        "zero_window_events": 0,
+        "rst": true,
+        "ack_rtt_ms": {
+          "min": 1.0,
+          "median": 210.0,
+          "p95": 210.0,
+          "max": 210.0
+        },
+        "delta_ms": {
+          "min": 0.0,
+          "median": 10.0,
+          "p95": 200.0,
+          "max": 200.0
+        },
+        "sample_frames": [
+          68,
+          71,
+          74,
+          77,
+          80
+        ]
+      }
+    ]
+  },
+  "dns": {
+    "queries_total": 26,
+    "responses_total": 26,
+    "unanswered_queries": 0,
+    "rcode_distribution": {
+      "NOERROR": 18,
+      "NXDOMAIN": 5,
+      "SERVFAIL": 3
+    },
+    "latency_ms": {
+      "min": 15.0,
+      "median": 20.0,
+      "p95": 500.0,
+      "max": 500.0
+    },
+    "slow_queries": [
+      {
+        "latency_ms": 500.0,
+        "name": "slow0.remote.com",
+        "frame": 120
+      },
+      {
+        "latency_ms": 500.0,
+        "name": "slow1.remote.com",
+        "frame": 122
+      },
+      {
+        "latency_ms": 500.0,
+        "name": "slow2.remote.com",
+        "frame": 124
+      }
+    ],
+    "query_type_distribution": {
+      "A": 21,
+      "TXT": 5
+    },
+    "nxdomain_domains": [
+      {
+        "name": "ohgi1jny.evil-c2.com",
+        "count": 1,
+        "sample_frame": 104
+      },
+      {
+        "name": "t7rpwh6n.evil-c2.com",
+        "count": 1,
+        "sample_frame": 106
+      },
+      {
+        "name": "nyfx4m8t.evil-c2.com",
+        "count": 1,
+        "sample_frame": 108
+      },
+      {
+        "name": "1qojah9t.evil-c2.com",
+        "count": 1,
+        "sample_frame": 110
+      },
+      {
+        "name": "q6v9mh7f.evil-c2.com",
+        "count": 1,
+        "sample_frame": 112
+      }
+    ],
+    "servfail_domains": [
+      {
+        "name": "broken.internal",
+        "count": 3,
+        "sample_frame": 114
+      }
+    ],
+    "top_queried_domains": [
+      {
+        "name": "broken.internal",
+        "count": 3
+      },
+      {
+        "name": "ok0.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok1.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok2.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok3.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok4.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok5.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok6.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok7.example.com",
+        "count": 1
+      },
+      {
+        "name": "ok8.example.com",
+        "count": 1
+      }
+    ],
+    "dns_servers_queried": [
+      "10.0.0.53"
+    ],
+    "truncated_responses": 0
+  }
+}
