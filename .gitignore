@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Python / Environment
+.venv/
+__pycache__/
+*.py[cod]
+.python-version
+
+# Dependencies
+# Keep pyproject.toml and uv.lock, but ignore the legacy requirements.txt if not used
+# requirements.txt 
+
+# macOS
+.DS_Store
+
+# IDEs / AI Tools
+.claude/
+.vscode/
+.idea/
+
+# Application Output (Generated data)
+agentic-pcap-forensic-engine/tests/sample_pcaps/
