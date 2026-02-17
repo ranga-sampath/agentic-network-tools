@@ -164,6 +164,10 @@ Convert raw per-packet data into a compact **Semantic JSON** structure.
 }
 ```
 
+### Compare Mode
+
+When `--compare` is used, the pipeline runs Stages 1-3 for both captures independently (producing two semantic JSONs), then uses a **comparison-specific prompt** for Stage 4. The comparison prompt instructs the AI to identify regressions, improvements, new issues, and resolved issues by comparing rates and ratios across captures. The output is a single unified comparison report (not two separate reports).
+
 ### Stage 4 — AI Diagnosis + Report Generation
 
 - Build a **deeply technical prompt** containing the Semantic JSON plus a comprehensive protocol analysis framework. The prompt is not a generic "summarize this data" instruction — it embeds expert-level diagnostic patterns for each protocol so the AI can perform root cause analysis at the level of a senior network engineer:
@@ -199,15 +203,23 @@ nw-forensics/
 ## CLI Interface
 
 ```bash
-# Basic usage
+# Basic usage (single capture)
 python pcap_forensics.py /path/to/capture.pcap
 
 # Two outputs written to same directory as input:
 #   /path/to/capture_semantic.json          (structured data)
 #   /path/to/capture_forensic_report.md     (AI-generated report)
+
+# Comparative analysis (two captures)
+python pcap_forensics.py /path/to/baseline.pcap --compare /path/to/current.pcap
+
+# Three outputs:
+#   /path/to/baseline_semantic.json
+#   /path/to/current_semantic.json
+#   /path/to/baseline_vs_current_comparison.md
 ```
 
-No flags, no config files, no modes. One input, two outputs.
+Single-capture mode: one input, two outputs. Compare mode: two inputs, three outputs.
 
 ---
 
@@ -253,7 +265,7 @@ The following are natural extensions that could add value without requiring an a
 | Enhancement | Description |
 |-------------|-------------|
 | **Additional protocols** | Add extractors for HTTP (status codes, latency), TLS (handshake failures, cert issues), DHCP (lease problems), or any protocol tshark can decode. Each is an additive change — a new tshark command and a new key in the Semantic JSON. |
-| **Comparative analysis** | Accept two pcap files and produce a diff report — useful for "it worked yesterday, it's broken today" scenarios. |
+| **Comparative analysis** | **Implemented** via `--compare` flag. See CLI Interface and Compare Mode sections above. |
 | **Batch mode** | Process a directory of pcap files and produce a summary report across all captures (e.g., recurring DNS failures across multiple time windows). |
 | **Interactive mode** | After generating the report, allow the user to ask follow-up questions about the capture by chatting with the AI, with the Semantic JSON as persistent context. |
 | **HTML report output** | Offer an HTML report option with collapsible sections and styled anomaly tables, generated from the same Markdown via a lightweight converter. |

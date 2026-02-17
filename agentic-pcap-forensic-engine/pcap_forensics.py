@@ -255,6 +255,103 @@ operation."
 {semantic_json}
 --- END SEMANTIC JSON ---"""
 
+COMPARE_PROMPT_TEMPLATE = """\
+You are an expert network forensic analyst performing a comparative analysis
+of two packet captures taken at different times from the same network segment.
+Your goal is to identify what changed between the two captures and determine
+whether network health improved, degraded, or remained stable.
+
+You are given two sets of structured telemetry labelled "Capture A" (baseline)
+and "Capture B" (current). Identify regressions, improvements, new issues,
+and resolved issues by comparing the metrics and anomalies across captures.
+
+## Comparison Framework
+
+For each protocol present in either capture, compare these dimensions:
+
+### ARP Comparison
+- New IP-MAC conflicts in B that weren't in A = new spoofing activity
+- IP-MAC conflicts in A resolved in B = spoofing stopped or remediated
+- Change in unanswered ARP count = host availability change
+- New gratuitous ARP activity = possible failover event
+
+### ICMP Comparison
+- New Destination Unreachable types/codes in B = new connectivity failures
+- RTT regression (B median/p95 significantly higher than A) = path degradation
+- New TTL Exceeded sources = new routing loop
+- Resolved unreachable entries = connectivity restored
+
+### TCP Comparison
+- Retransmission rate change (retransmissions/total packets) — not raw counts
+- Handshake success rate change
+- New zero-window events = new application bottleneck
+- New streams with issues that were healthy in A
+- RST teardown rate change
+
+### DNS Comparison
+- New NXDOMAIN domains in B = new misconfiguration or DGA activity
+- Latency regression (B median/p95 vs A)
+- New SERVFAIL domains = new zone failures
+- Change in query type distribution = behavioral shift
+- New DNS servers queried = resolver configuration change
+
+### Cross-Capture Correlation
+- Same host appearing in both ARP unanswered (A) and ICMP unreachable (B)
+  = persistent host-down issue
+- Issue in A's TCP retransmissions resolved in B + new ICMP Frag Needed in B
+  = MTU fix applied but with side effects
+- DNS latency regression in B + same DNS server showing TCP retransmissions
+  in B = DNS server degradation
+
+## Output Format
+
+Produce a comparative forensic report in Markdown with exactly these sections:
+
+## Executive Summary
+2-4 sentences stating the overall trajectory (improved/degraded/stable) with
+the most significant change. Name specific IPs, protocols, and metrics.
+
+## Change Summary Table
+A Markdown table: Protocol | Metric | Capture A | Capture B | Delta | Assessment
+Assessment values: REGRESSION, IMPROVEMENT, STABLE, NEW ISSUE, RESOLVED
+Include key metrics for every protocol present in either capture.
+
+## New Issues (Capture B only)
+Issues present in B but not in A. Use the same severity classification
+(CRITICAL/HIGH/MEDIUM/LOW/INFO) and format as the single-capture Anomaly
+Table: Severity | Protocol | Issue | Detail | Frame(s)
+If none: "No new issues detected."
+
+## Resolved Issues (Capture A only)
+Issues that were present in A but are absent in B. Same table format.
+If none: "No issues from Capture A were resolved."
+
+## Regressions
+For each metric that worsened significantly between A and B, provide a 2-3
+sentence technical explanation of what the change indicates and possible
+root causes. Skip if no regressions.
+
+## Remediation
+Specific CLI commands for each new issue or regression, with the same
+specificity as the single-capture report. If no issues: "No action required."
+
+## Rules
+- Compare RATES and RATIOS, not raw counts (captures may have different
+  durations and packet volumes). Use avg_packets_per_second and
+  duration_seconds to normalize.
+- Every claim must be supported by data from one or both captures.
+- Do not speculate beyond what the data supports.
+- A metric changing by <10% is STABLE. 10-50% is noteworthy. >50% is
+  significant. >200% is critical.
+
+--- BEGIN CAPTURE A (BASELINE) ---
+{semantic_json_a}
+--- END CAPTURE A ---
+
+--- BEGIN CAPTURE B (CURRENT) ---
+{semantic_json_b}
+--- END CAPTURE B ---"""
+
 
 # ---------------------------------------------------------------------------
 # Helpers — parsing tshark's tab-separated output
@@ -305,6 +402,8 @@ def parse_args() -> argparse.Namespace:
         help="Output directory for semantic JSON (default: same as input)")
     parser.add_argument("--report-dir",
         help="Output directory for forensic report (default: same as input)")
+    parser.add_argument("--compare", metavar="PCAP2",
+        help="Second pcap for comparative analysis (produces diff report)")
     return parser.parse_args()
 
 
@@ -1061,6 +1160,13 @@ def build_prompt(semantic: dict) -> str:
     return PROMPT_TEMPLATE.format(semantic_json=json.dumps(semantic, indent=2))
 
 
+def build_compare_prompt(semantic_a: dict, semantic_b: dict) -> str:
+    return COMPARE_PROMPT_TEMPLATE.format(
+        semantic_json_a=json.dumps(semantic_a, indent=2),
+        semantic_json_b=json.dumps(semantic_b, indent=2),
+    )
+
+
 def call_gemini(prompt: str) -> str:
     try:
         from google import genai
@@ -1105,6 +1211,15 @@ def save_report(report_text: str, pcap_path: Path,
     return out_path
 
 
+def save_comparison_report(report_text: str, pcap_a: Path, pcap_b: Path,
+                           output_dir: Path | None = None) -> Path:
+    base_dir = output_dir if output_dir else pcap_a.parent
+    base_dir.mkdir(parents=True, exist_ok=True)
+    out_path = base_dir / f"{pcap_a.stem}_vs_{pcap_b.stem}_comparison.md"
+    out_path.write_text(report_text, encoding="utf-8")
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # Entry Point
 # ---------------------------------------------------------------------------
@@ -1113,26 +1228,56 @@ def main() -> None:
     try:
         args = parse_args()
 
-        print("[1/4] Validating input...")
-        pcap_path = validate_input(args.pcap)
+        if args.compare:
+            # --- Compare mode ---
+            print("[1/5] Validating inputs...")
+            pcap_a = validate_input(args.pcap)
+            pcap_b = validate_input(args.compare)
+            semantic_dir = Path(args.semantic_dir) if args.semantic_dir else None
+            report_dir = Path(args.report_dir) if args.report_dir else None
 
-        semantic_dir = Path(args.semantic_dir) if args.semantic_dir else None
-        report_dir = Path(args.report_dir) if args.report_dir else None
+            print(f"[2/5] Extracting protocol data from Capture A ({pcap_a.name})...")
+            raw_a = extract_all(pcap_a)
+            print(f"[3/5] Extracting protocol data from Capture B ({pcap_b.name})...")
+            raw_b = extract_all(pcap_b)
 
-        print("[2/4] Extracting protocol data via tshark...")
-        raw_data = extract_all(pcap_path)
+            print("[4/5] Building semantic summaries...")
+            semantic_a = reduce_to_semantic(raw_a)
+            semantic_b = reduce_to_semantic(raw_b)
+            json_a = save_semantic_json(semantic_a, pcap_a, semantic_dir)
+            json_b = save_semantic_json(semantic_b, pcap_b, semantic_dir)
+            print(f"      Saved: {json_a}")
+            print(f"      Saved: {json_b}")
 
-        print("[3/4] Building semantic summary...")
-        semantic = reduce_to_semantic(raw_data)
-        json_path = save_semantic_json(semantic, pcap_path, semantic_dir)
-        print(f"      Saved: {json_path}")
+            print("[5/5] Generating comparative report via Gemini...")
+            prompt = build_compare_prompt(semantic_a, semantic_b)
+            report_text = call_gemini(prompt)
+            report_path = save_comparison_report(
+                report_text, pcap_a, pcap_b, report_dir)
+            print(f"      Saved: {report_path}")
+            print("\nDone.")
+        else:
+            # --- Single-capture mode ---
+            print("[1/4] Validating input...")
+            pcap_path = validate_input(args.pcap)
 
-        print("[4/4] Generating forensic report via Gemini...")
-        report_text = generate_report(semantic)
-        report_path = save_report(report_text, pcap_path, report_dir)
-        print(f"      Saved: {report_path}")
+            semantic_dir = Path(args.semantic_dir) if args.semantic_dir else None
+            report_dir = Path(args.report_dir) if args.report_dir else None
 
-        print("\nDone.")
+            print("[2/4] Extracting protocol data via tshark...")
+            raw_data = extract_all(pcap_path)
+
+            print("[3/4] Building semantic summary...")
+            semantic = reduce_to_semantic(raw_data)
+            json_path = save_semantic_json(semantic, pcap_path, semantic_dir)
+            print(f"      Saved: {json_path}")
+
+            print("[4/4] Generating forensic report via Gemini...")
+            report_text = generate_report(semantic)
+            report_path = save_report(report_text, pcap_path, report_dir)
+            print(f"      Saved: {report_path}")
+
+            print("\nDone.")
 
     except KeyboardInterrupt:
         print("\nInterrupted.")

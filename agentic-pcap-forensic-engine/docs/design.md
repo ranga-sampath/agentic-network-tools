@@ -10,25 +10,39 @@ All functions live in `pcap_forensics.py`. The call graph is strictly top-down �
 
 ```
 main()
- ├── validate_input(args)                     # Stage 1
- ├── extract_all(pcap_path)                   # Stage 2
- │    ├── extract_capture_summary(pcap_path)
- │    ├── extract_arp(pcap_path)
- │    ├── extract_icmp(pcap_path)
- │    ├── extract_tcp(pcap_path)
- │    └── extract_dns(pcap_path)
- │         (all extractors call run_tshark)    # shared helper
- ├── reduce_to_semantic(raw_data)             # Stage 3
- │    ├── reduce_arp(raw)
- │    ├── reduce_icmp(raw)
- │    ├── reduce_tcp(raw)
- │    └── reduce_dns(raw)
- │         (all reducers call compute_stats)   # shared helper
- ├── save_semantic_json(semantic, pcap_path)
- ├── generate_report(semantic)                # Stage 4
- │    ├── build_prompt(semantic)
- │    └── call_gemini(prompt)
- └── save_report(report_text, pcap_path)
+ ├── [single-capture mode]
+ │    ├── validate_input(args)                     # Stage 1
+ │    ├── extract_all(pcap_path)                   # Stage 2
+ │    │    ├── extract_capture_summary(pcap_path)
+ │    │    ├── extract_arp(pcap_path)
+ │    │    ├── extract_icmp(pcap_path)
+ │    │    ├── extract_tcp(pcap_path)
+ │    │    └── extract_dns(pcap_path)
+ │    │         (all extractors call run_tshark)    # shared helper
+ │    ├── reduce_to_semantic(raw_data)             # Stage 3
+ │    │    ├── reduce_arp(raw)
+ │    │    ├── reduce_icmp(raw)
+ │    │    ├── reduce_tcp(raw)
+ │    │    └── reduce_dns(raw)
+ │    │         (all reducers call compute_stats)   # shared helper
+ │    ├── save_semantic_json(semantic, pcap_path)
+ │    ├── generate_report(semantic)                # Stage 4
+ │    │    ├── build_prompt(semantic)
+ │    │    └── call_gemini(prompt)
+ │    └── save_report(report_text, pcap_path)
+ │
+ └── [compare mode — --compare flag]
+      ├── validate_input(pcap_a)                   # Stage 1 (×2)
+      ├── validate_input(pcap_b)
+      ├── extract_all(pcap_a)                      # Stage 2 (×2)
+      ├── extract_all(pcap_b)
+      ├── reduce_to_semantic(raw_a)                # Stage 3 (×2)
+      ├── reduce_to_semantic(raw_b)
+      ├── save_semantic_json(semantic_a, pcap_a)
+      ├── save_semantic_json(semantic_b, pcap_b)
+      ├── build_compare_prompt(semantic_a, semantic_b)  # Stage 4 (compare)
+      ├── call_gemini(prompt)
+      └── save_comparison_report(report_text, pcap_a, pcap_b)
 ```
 
 ---
@@ -44,7 +58,7 @@ def main() -> None
 - Calls each stage in sequence
 - Prints progress to stdout (e.g., `"Extracting ARP data..."`, `"Generating report..."`)
 - Wraps everything in a top-level try/except that prints user-friendly messages and exits with code 1 on failure
-- No return value; writes two files to disk as side effects
+- No return value; writes two files to disk as side effects (single-capture mode) or three files (compare mode)
 
 ### Stage 1 — Validation
 
@@ -154,6 +168,63 @@ def save_report(report_text: str, pcap_path: Path) -> Path
 ```
 - Writes the AI response to `<pcap_stem>_forensic_report.md` in the same directory as the input file
 - Returns the output path
+
+### Stage 4 — Comparative Analysis (Compare Mode)
+
+```python
+def build_compare_prompt(semantic_a: dict, semantic_b: dict) -> str
+```
+- Constructs the comparison prompt by formatting `COMPARE_PROMPT_TEMPLATE` with both semantic JSONs
+- Returns the full prompt string with both captures embedded
+
+```python
+def save_comparison_report(report_text: str, pcap_a: Path, pcap_b: Path,
+                           output_dir: Path | None = None) -> Path
+```
+- Writes the AI comparison response to `<stem_a>_vs_<stem_b>_comparison.md`
+- Output directory defaults to the same directory as `pcap_a`, or `output_dir` if provided
+- Returns the output path
+
+**`COMPARE_PROMPT_TEMPLATE`** — A separate prompt template (not a modification of `PROMPT_TEMPLATE`) that instructs the AI to perform comparative analysis. Key differences from the single-capture prompt:
+- Receives two semantic JSONs labelled "Capture A (baseline)" and "Capture B (current)"
+- Comparison framework covers ARP, ICMP, TCP, DNS, and cross-capture correlation
+- Output format includes: Executive Summary, Change Summary Table, New Issues, Resolved Issues, Regressions, and Remediation
+- Rules emphasize comparing RATES and RATIOS (not raw counts) since captures may differ in duration/volume
+- Uses thresholds: <10% change = STABLE, 10-50% = noteworthy, >50% = significant, >200% = critical
+
+### Compare Mode Console Output
+
+```
+$ python pcap_forensics.py /path/to/baseline.pcap --compare /path/to/current.pcap
+
+[1/5] Validating inputs...
+[2/5] Extracting protocol data from Capture A (baseline.pcap)...
+      ARP:  10 packets
+      ICMP: 20 packets
+      TCP:  150 packets
+      DNS:  20 packets
+[3/5] Extracting protocol data from Capture B (current.pcap)...
+      ARP:  10 packets
+      ICMP: 20 packets
+      TCP:  180 packets
+      DNS:  40 packets
+[4/5] Building semantic summaries...
+      Saved: /path/to/baseline_semantic.json
+      Saved: /path/to/current_semantic.json
+[5/5] Generating comparative report via Gemini...
+      Saved: /path/to/baseline_vs_current_comparison.md
+
+Done.
+```
+
+### Compare Mode Edge Cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Pcaps with different protocols present | Each pcap's semantic JSON includes only its protocols. The AI handles asymmetry — e.g., DNS in A but not B means DNS was removed/stopped. |
+| Very different capture durations | The comparison prompt instructs the AI to normalize by rates (using `avg_packets_per_second` and `duration_seconds`), not raw counts. |
+| Same pcap compared with itself | All metrics will be STABLE. Valid but not useful. |
+| Comparison report naming | `<stem_a>_vs_<stem_b>_comparison.md` — always uses pcap_a's directory unless `--report-dir` overrides. |
 
 ---
 
@@ -619,16 +690,29 @@ operation."
 
 The `{semantic_json}` placeholder is replaced with `json.dumps(semantic, indent=2)`.
 
+### Comparison Prompt Template
+
+The `COMPARE_PROMPT_TEMPLATE` is a separate constant (not a modification of `PROMPT_TEMPLATE`). It contains `{semantic_json_a}` and `{semantic_json_b}` placeholders, replaced by `build_compare_prompt()` with `json.dumps(semantic_a, indent=2)` and `json.dumps(semantic_b, indent=2)` respectively.
+
+The comparison prompt differs from the single-capture prompt in these ways:
+- **Input structure**: Two semantic JSONs delimited by `--- BEGIN CAPTURE A (BASELINE) ---` / `--- END CAPTURE A ---` and `--- BEGIN CAPTURE B (CURRENT) ---` / `--- END CAPTURE B ---`
+- **Comparison framework**: Protocol-specific comparison dimensions (ARP conflict changes, ICMP RTT regression, TCP retransmission rate changes, DNS NXDOMAIN deltas, cross-capture correlation)
+- **Output sections**: Executive Summary, Change Summary Table (with Assessment: REGRESSION/IMPROVEMENT/STABLE/NEW ISSUE/RESOLVED), New Issues, Resolved Issues, Regressions, Remediation
+- **Normalization rules**: Compare rates and ratios, not raw counts. Thresholds: <10% STABLE, 10-50% noteworthy, >50% significant, >200% critical
+
+The full template text is in `pcap_forensics.py` as `COMPARE_PROMPT_TEMPLATE`.
+
 ---
 
 ## Output File Naming
 
-Both output files are placed in the **same directory** as the input pcap file.
+Both output files are placed in the **same directory** as the input pcap file (or in `--semantic-dir` / `--report-dir` if specified).
 
-| Input | Semantic JSON Output | Report Output |
-|-------|---------------------|---------------|
-| `/path/to/capture.pcap` | `/path/to/capture_semantic.json` | `/path/to/capture_forensic_report.md` |
-| `/data/test.pcapng` | `/data/test_semantic.json` | `/data/test_forensic_report.md` |
+| Mode | Input | Semantic JSON Output | Report Output |
+|------|-------|---------------------|---------------|
+| Single | `/path/to/capture.pcap` | `/path/to/capture_semantic.json` | `/path/to/capture_forensic_report.md` |
+| Single | `/data/test.pcapng` | `/data/test_semantic.json` | `/data/test_forensic_report.md` |
+| Compare | `baseline.pcap --compare current.pcap` | `baseline_semantic.json` + `current_semantic.json` | `baseline_vs_current_comparison.md` |
 
 Naming uses `Path.stem` (filename without extension) + the fixed suffix.
 
