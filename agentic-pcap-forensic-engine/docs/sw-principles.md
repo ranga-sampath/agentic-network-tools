@@ -237,6 +237,77 @@ When choosing between options, prioritize in this order:
 
 ---
 
+## 11. Pipeline & Data Transformation Design
+
+### Linear Pipeline Architecture
+- **Stages with clear boundaries** — Structure processing as a pipeline (validate → extract → transform → output) where each stage has a single responsibility and a well-defined input/output contract. Stages may be sequential, looped, or include feedback paths — what matters is that each stage's interface is explicit and its concerns are isolated
+- **Stages are functions, not frameworks** — Each stage is a plain function or group of functions. No pipeline framework, no DAG orchestrator, no event bus. The `main()` function calls stages in order
+- **Intermediate artifacts to disk** — Write intermediate results (e.g., structured JSON) to disk between stages. This gives users a reusable machine-readable artifact independent of the final output, and enables debugging each stage in isolation
+- **Dual-artifact output** — Produce both a machine-readable format (JSON, CSV) and a human-readable format (Markdown, HTML) from the same pipeline. Engineers want structured data for scripting; stakeholders want a readable report
+
+### Semantic Reduction
+- **Compress through meaning, not truncation** — When raw data is too large to process directly, reduce it by extracting meaning: count instead of listing, aggregate by conversation/group, surface statistical summaries (min/median/p95/max), and filter to anomalies only
+- **Anomaly-only detail** — Include per-item details only for statistical outliers (e.g., values > 2x median). Everything else is aggregated. This keeps output compact without losing forensically relevant information
+- **Omit empty sections** — If an entire category has no data, exclude it from the output entirely rather than including it with zero values. This keeps the data representation lean and signals absence clearly
+- **Cap unbounded lists** — Any list that could grow with input size (top domains, error groups) should be capped (e.g., top 10) to maintain a predictable output size regardless of input volume
+
+---
+
+## 12. AI Integration Patterns
+
+### AI as a Reasoning Layer
+- **Preprocess before prompting** — Never send raw data to an AI. Transform, aggregate, and reduce first. A 10MB input should become <5,000 tokens of structured telemetry. The AI's job is reasoning and correlation, not data wrangling
+- **Structured data in, structured report out** — Feed the AI well-organized JSON with clear field names, and specify an exact output format (sections, tables, severity levels). This constrains the AI to produce useful, consistent output rather than freeform text
+- **Embed domain expertise in the prompt** — The prompt is not "summarize this data." It contains an expert-level diagnostic framework: what each data point means, how to correlate signals across categories, and what specific patterns indicate. The prompt encodes the knowledge of a senior practitioner
+- **Prompt templates as first-class architecture** — Treat prompt templates as critical code artifacts, not throwaway strings. They define the analytical framework, output structure, and quality floor. Document them in your design docs alongside function signatures
+
+### AI Provider Portability
+- **Isolate AI to one stage** — All AI interaction should be confined to a single pipeline stage with exactly two concerns: (1) constructing a prompt from structured data, and (2) making an API call and reading back text. Every other stage is AI-provider-agnostic
+- **Swap by changing one function** — If switching from Provider A to Provider B requires changes in more than one function, the AI integration is too tightly coupled
+- **Sanitize errors from AI calls** — Never leak API keys in error messages. Scrub credentials from exception text before surfacing to the user
+
+---
+
+## 13. External Tool Integration
+
+### Leverage Battle-Tested Tools
+- **Shell out to experts** — When a mature, domain-specific tool exists (packet parsers, image processors, compilers), invoke it via subprocess rather than reimplementing its logic. A 20-year-old C tool with millions of users is more reliable than a fresh reimplementation
+- **Typed field extraction** — When calling external tools, request structured output (field-separated, JSON) rather than parsing human-readable text. Parse fields into typed values (int, float, bool) immediately at the extraction boundary
+- **One tool invocation per concern** — Prefer multiple focused invocations with specific filters over one monolithic invocation that returns everything. This keeps each extraction self-contained and makes the code easier to extend
+
+### Subprocess Safety
+- **List arguments, never shell=True** — Always pass subprocess commands as a list of strings. Never use `shell=True` or string interpolation into shell commands. This prevents command injection from user-supplied file paths or filter strings
+- **Capture stderr for diagnostics** — When an external tool fails, its stderr usually contains the most useful diagnostic message. Capture it and include it in your error reporting
+- **Streaming for large outputs** — When an external tool may produce output larger than memory, read stdout line by line instead of capturing all at once. Track only what you need (counters, first/last values) in a single pass
+
+---
+
+## 14. Additive Feature Design
+
+### Grow Without Restructuring
+- **New features as new code paths, not refactors** — When adding a capability (e.g., compare mode alongside single-capture mode), add a new branch in the entry point and new functions alongside existing ones. Do not restructure working code to accommodate the new feature
+- **New protocol = new extractor + new reducer** — In pipeline architectures, extending to handle a new data type should mean adding a new extraction function and a new reduction function, then wiring them into the existing pipeline. Existing extractors remain untouched
+- **Separate prompt templates per mode** — When the same AI pipeline serves different use cases (analysis vs. comparison), use separate prompt templates rather than conditionalizing a single template. Each template is self-contained and independently tunable
+
+### Single-File Until Proven Otherwise
+- **One file is fine** — A tool that fits in a single file (even 500-1000 lines) should stay in a single file. No `src/` directory, no package structure, no `__init__.py` until there is a concrete reason to split. A single file is easy to read top-to-bottom, easy to share, and has zero import complexity
+- **Split trigger: distinct reuse** — Split into multiple files only when a clearly separable component needs to be reused independently (e.g., imported by a test harness, shared with another tool). Organizational preference alone is not a sufficient reason
+
+---
+
+## 15. Documentation as a Design Discipline
+
+### Three Documents, Written Upfront
+- **Requirements first** — Write a concise requirements document before designing. It captures the user persona, functional requirements, non-functional constraints (token budget, privacy), and nothing else. Keep it under one page
+- **Architecture = decisions + rationale** — The architecture document captures what was chosen and why, in a decision table format: Decision | Choice | Rationale. Link rationale back to your principles document. This is the "why" document
+- **Design = how it works, precisely** — The design document captures function signatures, data schemas, edge cases, and parsing details at a level where another engineer (or AI) could implement the tool from the doc alone. This is the "how" document
+
+### Decision Tables Over Prose
+- **Tabular decisions** — When documenting choices (technology selection, what to omit, error handling), use tables rather than paragraphs. Tables force conciseness and make it easy to scan the full set of decisions at a glance
+- **Document what you omit** — Explicitly list what the architecture intentionally does not include and why. This prevents future contributors from adding complexity the design specifically avoided
+
+---
+
 ## Summary: Core Values
 
 1. **Cost-conscious** — Free tiers, minimal infrastructure, pay-per-use
@@ -246,3 +317,8 @@ When choosing between options, prioritize in this order:
 5. **User-first** — Safety nets, non-blocking, immediate feedback
 6. **Observable** — Measure latency, costs, errors; async logging
 7. **Stable** — Minimal churn, test carefully, document everything
+8. **Pipeline-oriented** — Clear stages (sequential, looped, or with feedback), intermediate artifacts, dual outputs
+9. **AI-disciplined** — Preprocess first, embed expertise in prompts, isolate the AI layer
+10. **Tool-leveraging** — Shell out to experts, subprocess safety, streaming for scale
+11. **Additive** — New features as new code paths, not rewrites; single-file until split is justified
+12. **Documentation-driven** — Requirements → Architecture → Design, written upfront not after
