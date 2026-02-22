@@ -1,0 +1,17 @@
+[project]
+name = "nw-forensics"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai>=1.64.0",
+    "python-dotenv>=1.2.1",
+    "setuptools<82",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-timeout>=2.4.0",
+]

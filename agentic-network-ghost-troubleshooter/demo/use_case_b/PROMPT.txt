@@ -1,0 +1,1 @@
+We've been seeing intermittent latency spikes on connections from tf-source-vm (10.0.1.4) to tf-dest-vm (10.0.1.5) on port 8080. Sometimes requests are fast, sometimes they stall. Ping between the VMs looks fine. Capture traffic on tf-source-vm and tell me what you find at the wire level.

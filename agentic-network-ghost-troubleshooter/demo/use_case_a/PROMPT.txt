@@ -1,0 +1,1 @@
+My application team says their service on tf-dest-vm (10.0.1.5) is running and listening on port 8080. But tf-source-vm (10.0.1.4) cannot connect to it — connections hang with no response. Ping between the VMs works fine. Both VMs are in resource group nw-forensics-rg, same subnet 10.0.1.0/24. Investigate why TCP port 8080 is not reachable from 10.0.1.4 to 10.0.1.5.

@@ -1,0 +1,1 @@
+We suspect packets are being dropped or altered somewhere between tf-source-vm (10.0.1.4) and tf-dest-vm (10.0.1.5), but we can't tell if it's at the sender, receiver, or network fabric. We need wire-level evidence from both endpoints simultaneously so we can compare what was sent against what arrived. Please capture traffic on both VMs at the same time and compare the results.
