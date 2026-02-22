@@ -237,9 +237,9 @@ def _classify_tier1(args: list[str]) -> Optional[bool]:
     """Tier 1: Check the command allowlist.
 
     Returns:
-        None  — command is in the allowlist and flags are safe (pass to Tier 2)
+        False — command is DEFINITELY SAFE (short-circuits Tier 3; used for trusted internals)
+        None  — command passes Tier 1; continue to Tier 2/3
         True  — command is RISKY (not in allowlist, or risky flags)
-        False is not used.
     """
     base = os.path.basename(args[0])
 
@@ -250,6 +250,38 @@ def _classify_tier1(args: list[str]) -> Optional[bool]:
     # Always-safe commands
     if base in _ALWAYS_SAFE:
         return None
+
+    # Python interpreter running the trusted PCAP forensics engine — auto-approve
+    # Matches: python / python3 / python3.12 / etc. ONLY when the script arg is pcap_forensics.py
+    if re.match(r"python\d*(?:\.\d+)*$", base):
+        if len(args) > 1 and os.path.basename(args[1]) == "pcap_forensics.py":
+            return None  # SAFE — trusted internal forensic engine
+        return True  # RISKY — arbitrary python execution
+
+    # cat auto-approve for internal forensic report files in /tmp/captures/
+    # These files are created by the PCAP forensic engine — safe to read without HITL.
+    if base == "cat":
+        targets = [a for a in args[1:] if not a.startswith("-")]
+        if targets and all(
+            a.startswith("/tmp/captures/")
+            and (a.endswith("_forensic_report.md") or a.endswith("_comparison.md"))
+            for a in targets
+        ):
+            return None  # passes Tier 1; cat is not destructive, so Tier 3 won't catch it
+        return True  # RISKY — general cat
+
+    # rm auto-approve for ghost capture artifacts in /tmp/captures/
+    # These .cap files are created by the orchestrator and deleted during cleanup.
+    # Returns False (not None) so classify() short-circuits BEFORE Tier 3, which
+    # unconditionally flags rm as a destructive command.
+    if base == "rm":
+        targets = [a for a in args[1:] if not a.startswith("-")]
+        if targets and all(
+            a.startswith("/tmp/captures/ghost_") and a.endswith(".cap")
+            for a in targets
+        ):
+            return False  # DEFINITELY SAFE — bypass Tier 3
+        # All other rm usage falls through to Tier 3 checks
 
     # Flag-sensitive commands
     if base in _FLAG_SENSITIVE:
@@ -265,7 +297,7 @@ def _classify_tier1(args: list[str]) -> Optional[bool]:
 # Tier 2 — Azure CLI verb rules
 # ---------------------------------------------------------------------------
 
-_AZ_SAFE_VERBS = frozenset({"list", "show", "get", "check", "exists", "wait"})
+_AZ_SAFE_VERBS = frozenset({"list", "show", "get", "check", "exists", "wait", "show-status"})
 
 _AZ_RISKY_VERBS = frozenset({
     "create", "delete", "update", "set", "add", "remove",
@@ -309,6 +341,10 @@ def _classify_tier2(args: list[str]) -> Optional[bool]:
     # Skip tokens that are values of --flag arguments (e.g. --name web-nsg).
     # Boolean flags like --created have no value — detected when the next
     # token also starts with "--".
+    #
+    # Short flags with a mandatory value (e.g. -o json, -g rg-name):
+    # the token following them is a value, not a positional.
+    _SHORT_FLAGS_WITH_VALUE = frozenset({"-o", "-g", "-n", "-l", "-s", "-u", "-p"})
     positional = []
     skip_next = False
     for a in args[1:]:
@@ -324,6 +360,10 @@ def _classify_tier2(args: list[str]) -> Optional[bool]:
             skip_next = False
             continue
         if a.startswith("--"):
+            skip_next = True
+            continue
+        if a in _SHORT_FLAGS_WITH_VALUE:
+            # Short flag that takes a value — skip this flag and the next token
             skip_next = True
             continue
         if a.startswith("-"):
@@ -463,12 +503,33 @@ def classify(command_str: str) -> tuple[str, Optional[int], str]:
                     f"Command '{base}' is in the allowlist but arguments contain risky flags")
         return (CLASSIFICATION_RISKY, 1,
                 f"Command '{base}' is not in the allowlist — default deny")
+    if tier1_result is False:
+        # DEFINITELY SAFE — short-circuit before Tier 3 (used for trusted internal commands
+        # like rm on capture artifacts, which would otherwise be flagged as destructive).
+        return (CLASSIFICATION_SAFE, None, "")
 
     # Tier 2 — Azure verb rules
     tier2_result = _classify_tier2(args)
     if tier2_result is True:
-        positional = [a for a in args[1:] if not a.startswith("-")]
-        verb = positional[-1] if positional else args[1] if len(args) > 1 else "unknown"
+        # Re-derive the verb using the same short-flag-aware logic as _classify_tier2
+        _SHORT_FLAGS_WITH_VALUE = frozenset({"-o", "-g", "-n", "-l", "-s", "-u", "-p"})
+        _pos, _skip = [], False
+        for a in args[1:]:
+            if _skip:
+                if a.startswith("--"):
+                    _skip = True   # prior --flag was boolean; this is a new flag
+                elif a.startswith("-"):
+                    _skip = False  # prior --flag was boolean; this is a new short flag
+                else:
+                    _skip = False  # consumed the value of the prior flag
+                continue
+            if a.startswith("--"):
+                _skip = True
+            elif a in _SHORT_FLAGS_WITH_VALUE:
+                _skip = True
+            elif not a.startswith("-"):
+                _pos.append(a)
+        verb = _pos[-1] if _pos else args[1] if len(args) > 1 else "unknown"
         return (CLASSIFICATION_RISKY, 2,
                 f"Azure CLI verb '{verb}' is classified as mutative")
     # tier2_result is False (safe az) or None (not az) — continue
@@ -971,6 +1032,7 @@ class SafeExecShell:
         hitl_callback: Optional[Callable] = None,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         anonymization_enabled: bool = False,
+        starting_sequence: int = 0,
     ):
         self._session_id = session_id
         self._audit_dir = Path(audit_dir)
@@ -978,7 +1040,7 @@ class SafeExecShell:
         self._timeout = timeout_seconds
         self._anonymization_enabled = anonymization_enabled
         self._anonymizer = TopologyAnonymizer() if anonymization_enabled else None
-        self._sequence = 0
+        self._sequence = starting_sequence
 
     def execute(self, request: dict[str, Any]) -> dict[str, Any]:
         """Execute a command through the four-stage pipeline.
@@ -1239,6 +1301,7 @@ class SafeExecShell:
             environment=environment,
             exit_code=exit_code,
             output=redacted_output,
+            stderr=redacted_stderr,
             output_truncated=truncation_meta.get("truncation_applied", False),
             redactions_applied=redaction_meta.get("redactions_applied", False),
             redaction_categories=redaction_meta.get("redaction_categories", []),
@@ -1410,6 +1473,7 @@ class SafeExecShell:
         redactions_applied: bool,
         redaction_categories: list[str],
         duration: Optional[float],
+        stderr: str = "",
     ):
         """Write an audit record. Failures are logged to stderr but never block execution."""
         record = AuditRecord(
@@ -1427,7 +1491,7 @@ class SafeExecShell:
             modified_command=modified_command,
             environment=environment,
             exit_code=exit_code,
-            output_summary=output[:200] if output else "",
+            output_summary=(output[:200] if output else "") or (f"[stderr] {stderr[:300]}" if stderr else ""),
             output_truncated=output_truncated,
             redactions_applied=redactions_applied,
             redaction_categories=redaction_categories,

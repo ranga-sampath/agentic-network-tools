@@ -353,6 +353,109 @@ specificity as the single-capture report. If no issues: "No action required."
 --- END CAPTURE B ---"""
 
 
+ENDPOINT_CORRELATION_PROMPT_TEMPLATE = """\
+You are an expert network forensic analyst performing a path-correlation analysis
+of two packet captures taken simultaneously from the SOURCE and DESTINATION endpoints
+of the same network path.
+
+Capture A was taken at the SOURCE endpoint (the sender).
+Capture B was taken at the DESTINATION endpoint (the receiver).
+
+Your goal is to determine whether packets are being dropped, delayed, or altered
+in transit between source and destination. Compare what was visible at the source
+against what was visible at the destination to identify discrepancies that reveal
+firewall blocks, routing failures, or path degradation.
+
+## Correlation Framework
+
+### Flow Visibility
+- TCP streams/flows present in A (source) but absent in B (dest): packets were NOT delivered
+  → likely dropped by a firewall, NSG, ACL, or routing rule between the two endpoints.
+- TCP streams present in both A and B: packets reached destination.
+- Flows present in B but not in A: possible routing asymmetry, broadcast, or spoofing.
+
+### TCP Handshake Correlation
+- SYN count in A vs SYN count in B: a discrepancy indicates SYNs were dropped in transit.
+- If A shows SYN retransmissions but B shows no corresponding SYN: SYN drop confirmed.
+- Handshake success rate at A vs B: lower rate at B than A = connections failing before reaching dest.
+
+### Volume Asymmetry
+- Source sends N packets on a stream, dest receives M:
+  if M < N → estimated drop rate = (N - M) / N (accounting for capture timing differences).
+- High retransmission rate at A + near-zero at B: drops on the A→B path.
+- High retransmission rate at B: drops on the return path B→A.
+
+### Latency Analysis
+- RTT at source (A) covers the full round-trip (A→B + B→A).
+- One-way latency visible at B covers only the A→B direction.
+- If B shows no unusual delays but A shows high RTT: bottleneck is on the return path B→A.
+- If both A and B show elevated latency: bottleneck is on the A→B path or processing at B.
+
+### ICMP Analysis
+- ICMP Destination Unreachable at A but absent at B: a device between A and B is sending
+  rejections back to A without B's knowledge → firewall/NSG reject rule.
+- TTL Exceeded at A: routing loop somewhere between A and B.
+- No ICMP at B for traffic that shows drops at A: silent drop (deny-without-notify policy).
+
+### ARP / DNS
+- ARP unresolved at A for B's IP: L2 path is broken before packets are transmitted.
+- DNS NXDOMAIN/SERVFAIL at A but not B: name resolution failure affecting only the source side.
+
+## Output Format
+
+Produce a path-correlation report in Markdown with exactly these sections:
+
+## Executive Summary
+2-4 sentences stating overall path health: are packets delivered, dropped, or delayed?
+Name specific IPs, protocols, drop rates, and RTT figures from the data.
+
+## Path Health Table
+A Markdown table: Protocol | Metric | Source (A) | Dest (B) | Assessment
+Assessment values: DELIVERED, PARTIAL DROP, FULL DROP, DELAYED, ASYMMETRIC, CLEAN
+Include key metrics for every protocol present in either capture.
+
+## Flows Dropped in Transit
+Flows/streams visible at source but absent or incomplete at destination.
+Table: Protocol | Source IP | Dest IP | Port | Source Packets | Dest Packets | Est. Drop Rate
+If none: "No dropped flows detected — all source traffic was visible at destination."
+
+## Delivery Confirmed
+Flows visible at both source and destination with consistent packet counts.
+Brief summary (not a per-flow table unless fewer than 5 flows).
+If none: "No flows were confirmed delivered."
+
+## One-Way vs Round-Trip Analysis
+Compare RTT at source (full round-trip) vs latency at destination (one-way A→B).
+Identify which direction introduces delay.
+If RTT data absent in either capture: "RTT data unavailable for this direction."
+
+## Verdict
+One of: CLEAN PATH | PARTIAL DROP | FULL DROP | DEGRADED (DELAYED) | ASYMMETRIC ROUTING
+Followed by a 2-3 sentence explanation of the most likely root cause, citing specific metrics.
+Include a confidence level: HIGH / MEDIUM / LOW.
+
+## Recommended Actions
+Specific CLI commands to investigate further (az nsg show, az network watcher, tcpdump, etc.)
+If path is CLEAN: "No action required — packets are delivered end-to-end."
+
+## Rules
+- Capture A = Source endpoint. Capture B = Destination endpoint. Do not swap.
+- Compare RATES and RATIOS, not raw counts — captures may differ in duration and packet volume.
+  Use avg_packets_per_second and duration_seconds to normalise.
+- A flow absent from B is significant only if it appears in A with ≥3 packets;
+  single-packet flows may be timing artifacts.
+- Do not speculate beyond what the data supports.
+- Omit protocols with zero traffic in both captures.
+
+--- BEGIN CAPTURE A (SOURCE ENDPOINT) ---
+{semantic_json_a}
+--- END CAPTURE A ---
+
+--- BEGIN CAPTURE B (DESTINATION ENDPOINT) ---
+{semantic_json_b}
+--- END CAPTURE B ---"""
+
+
 # ---------------------------------------------------------------------------
 # Helpers — parsing tshark's tab-separated output
 # ---------------------------------------------------------------------------
@@ -397,13 +500,22 @@ def _parse_bool_flag(value: str) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="PCAP Forensic Engine — AI-powered network forensic analysis")
-    parser.add_argument("pcap", help="Path to .pcap/.pcapng file")
+    parser.add_argument("pcap", help="Path to .pcap/.pcapng/.cap file")
     parser.add_argument("--semantic-dir",
         help="Output directory for semantic JSON (default: same as input)")
     parser.add_argument("--report-dir",
         help="Output directory for forensic report (default: same as input)")
     parser.add_argument("--compare", metavar="PCAP2",
         help="Second pcap for comparative analysis (produces diff report)")
+    parser.add_argument("--mode",
+        choices=["temporal", "endpoint-correlation"],
+        default="temporal",
+        help=(
+            "Comparison mode (only used with --compare). "
+            "'temporal': baseline-vs-current analysis of the same segment at different times. "
+            "'endpoint-correlation': source-vs-destination analysis of the same path at the "
+            "same time — identifies dropped flows, handshake failures, and path asymmetry."
+        ))
     return parser.parse_args()
 
 
@@ -418,9 +530,9 @@ def validate_input(pcap_arg: str) -> Path:
         print(f"Error: File is not readable: {pcap_path}")
         sys.exit(1)
 
-    if pcap_path.suffix.lower() not in (".pcap", ".pcapng"):
+    if pcap_path.suffix.lower() not in (".pcap", ".pcapng", ".cap"):
         print(f"Error: Unsupported file extension '{pcap_path.suffix}'. "
-              "Expected .pcap or .pcapng")
+              "Expected .pcap, .pcapng, or .cap")
         sys.exit(1)
 
     if not shutil.which("tshark"):
@@ -1167,6 +1279,18 @@ def build_compare_prompt(semantic_a: dict, semantic_b: dict) -> str:
     )
 
 
+def build_endpoint_correlation_prompt(semantic_source: dict, semantic_dest: dict) -> str:
+    """Build a prompt for source-vs-destination endpoint correlation analysis.
+
+    semantic_source: semantic JSON from the SOURCE endpoint capture (sender).
+    semantic_dest:   semantic JSON from the DESTINATION endpoint capture (receiver).
+    """
+    return ENDPOINT_CORRELATION_PROMPT_TEMPLATE.format(
+        semantic_json_a=json.dumps(semantic_source, indent=2),
+        semantic_json_b=json.dumps(semantic_dest, indent=2),
+    )
+
+
 def call_gemini(prompt: str) -> str:
     try:
         from google import genai
@@ -1250,7 +1374,10 @@ def main() -> None:
             print(f"      Saved: {json_b}")
 
             print("[5/5] Generating comparative report via Gemini...")
-            prompt = build_compare_prompt(semantic_a, semantic_b)
+            if getattr(args, "mode", "temporal") == "endpoint-correlation":
+                prompt = build_endpoint_correlation_prompt(semantic_a, semantic_b)
+            else:
+                prompt = build_compare_prompt(semantic_a, semantic_b)
             report_text = call_gemini(prompt)
             report_path = save_comparison_report(
                 report_text, pcap_a, pcap_b, report_dir)
