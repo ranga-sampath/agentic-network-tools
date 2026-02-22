@@ -25,8 +25,8 @@ Azure Network Watcher packet capture lifecycle manager. Handles capture creation
 ## Quick Start
 
 ```bash
-git clone https://github.com/<your-org>/ahentic-network-tools
-cd ahentic-network-tools
+git clone https://github.com/<your-org>/agentic-network-tools
+cd agentic-network-tools
 
 # Run Ghost Agent (uses all three sibling libraries)
 cd agentic-network-ghost-troubleshooter
