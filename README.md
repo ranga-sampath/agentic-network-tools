@@ -54,3 +54,10 @@ uv run python pcap_forensics.py your-capture.pcap
 - Azure CLI (`az login`) — for Ghost Agent and Cloud Orchestrator
 - `tshark` — for PCAP Forensic Engine
 - A Gemini API key from [aistudio.google.com](https://aistudio.google.com)
+
+---
+
+## ✍️ Writing & Deep Dives
+
+* **[Ghost Agent: An AI Network Forensics Investigator for Cloud Infrastructure](https://youplusai.com/ghost-network-agent/)** *A deep dive into encoding senior network engineering methodology into autonomous, safe-exec AI agents.*
+
