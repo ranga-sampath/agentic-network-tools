@@ -4,6 +4,8 @@ A collection of AI-powered tools for autonomous network diagnostics, packet fore
 
 ---
 
+Built according to the principles of Deterministic Agency and Evidence Hierarchy. See the full [Engineering Manifesto](https://github.com/ranga-sampath/engineering-manifesto) for the architectural philosophy.
+
 ## Tools
 
 ### 👻 [Ghost Agent — AI Network Forensics Investigator](./agentic-network-ghost-troubleshooter/)
