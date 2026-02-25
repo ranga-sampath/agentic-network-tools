@@ -74,7 +74,8 @@
         "code": 1,
         "code_meaning": "Host Unreachable",
         "count": 3,
-        "sample_frame": 43
+        "sample_frame": 43,
+        "unreachable_dst": "10.0.0.99"
       }
     ],
     "ttl_exceeded_sources": [

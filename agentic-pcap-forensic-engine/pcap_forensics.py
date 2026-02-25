@@ -89,15 +89,22 @@ When analyzing each protocol section, apply these diagnostic patterns:
     subnet mask.
   - Code 3 (Port Unreachable): UDP port is closed. The application is not
     listening. Common with DNS (53), SNMP (161), syslog (514) misconfig.
-  - Code 4 (Fragmentation Needed, DF Set): PMTUD black hole. The path MTU
-    is smaller than the packet size but the Don't Fragment bit prevents
-    fragmentation. This causes large transfers to stall while small packets
-    (pings, TCP handshakes) work fine — one of the most deceptive network
-    failures. The ICMP message contains the next-hop MTU.
+  - Code 4 (Fragmentation Needed, DF Set): Path MTU constraint. The packet
+    exceeded the MTU of a downstream hop with the DF bit set. This ICMP is
+    the correct PMTUD signal — the source should reduce its MSS. If these
+    messages are being suppressed by an intermediate firewall (PMTUD black
+    hole), the source never learns the constraint and large transfers stall
+    silently while small packets (pings, TCP handshakes) continue working.
+    The ICMP message contains the next-hop MTU in the header.
   - Code 9/10 (Admin Prohibited): Firewall is actively rejecting traffic
     with an ICMP response (not just silently dropping). This identifies the
     filtering device's IP.
   - Code 13 (Communication Admin Prohibited): Packet filter rule match.
+- In unreachable_details: `src` is the router that sent the ICMP error;
+  `dst` is the original sender that receives the error notification;
+  `unreachable_dst` (when present) is the actual host that could not be
+  reached, extracted from the embedded inner IP header in the ICMP payload.
+  Do NOT confuse `dst` (notification recipient) with the unreachable target.
 - TTL Exceeded (Type 11): If from multiple different sources, likely
   traceroute. If the SAME source sends repeated TTL exceeded messages, this
   is a routing loop — packets are bouncing between routers, decrementing
@@ -555,7 +562,8 @@ def validate_input(pcap_arg: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def run_tshark(pcap_path: Path, fields: list[str],
-               display_filter: str = "") -> list[list[str]]:
+               display_filter: str = "",
+               extra_opts: list[str] | None = None) -> list[list[str]]:
     """Run a tshark command and return rows of tab-separated field values.
     Uses list args — never shell=True — to prevent command injection."""
     cmd = ["tshark", "-r", str(pcap_path), "-T", "fields"]
@@ -564,6 +572,8 @@ def run_tshark(pcap_path: Path, fields: list[str],
     for field in fields:
         cmd.extend(["-e", field])
     cmd.extend(["-E", "separator=\t", "-E", "header=n"])
+    if extra_opts:
+        cmd.extend(extra_opts)
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -657,6 +667,30 @@ def extract_icmp(pcap_path: Path) -> list[dict]:
             "src_ip": _parse_str(row[7]),
             "dst_ip": _parse_str(row[8]),
         })
+
+    # Second pass: extract the inner IP dst for ICMP Destination Unreachable
+    # (type 3) packets. Each such packet embeds the original IP header in its
+    # payload, producing two ip.dst fields. With -E occurrence=l, tshark
+    # returns the LAST ip.dst per packet — the inner header's dst, which is
+    # the actual unreachable destination (not the notification recipient).
+    inner_dst_by_frame: dict[int, str] = {}
+    for row in run_tshark(
+        pcap_path,
+        ["frame.number", "ip.dst"],
+        "icmp.type == 3",
+        extra_opts=["-E", "occurrence=l"],
+    ):
+        if len(row) >= 2:
+            inner_dst = _parse_str(row[1])
+            if inner_dst:
+                inner_dst_by_frame[int(row[0])] = inner_dst
+
+    for pkt in packets:
+        if pkt.get("type") == 3:
+            inner_dst = inner_dst_by_frame.get(pkt["frame"])
+            if inner_dst:
+                pkt["inner_dst_ip"] = inner_dst
+
     return packets
 
 
@@ -880,6 +914,10 @@ def reduce_icmp(raw: list[dict]) -> dict:
         result["type_distribution"] = dict(type_counts)
 
     # Destination Unreachable details (Type 3)
+    # src: router/device that sent the ICMP error
+    # dst: original sender that receives the error notification
+    # unreachable_dst: the actual host that could not be reached, extracted
+    #   from the inner (embedded) IP header in the ICMP payload
     unreach_groups: dict[tuple, dict] = {}
     for pkt in raw:
         if pkt.get("type") != 3:
@@ -887,13 +925,17 @@ def reduce_icmp(raw: list[dict]) -> dict:
         src = pkt.get("src_ip", "")
         dst = pkt.get("dst_ip", "")
         code = pkt.get("code", 0)
-        key = (src, dst, code)
+        inner_dst = pkt.get("inner_dst_ip", "")
+        key = (src, dst, code, inner_dst)
         if key not in unreach_groups:
-            unreach_groups[key] = {
+            entry: dict = {
                 "src": src, "dst": dst, "code": code,
                 "code_meaning": ICMP_UNREACH_CODES.get(code, f"Code {code}"),
                 "count": 0, "sample_frame": pkt["frame"],
             }
+            if inner_dst:
+                entry["unreachable_dst"] = inner_dst
+            unreach_groups[key] = entry
         unreach_groups[key]["count"] += 1
     if unreach_groups:
         result["unreachable_details"] = list(unreach_groups.values())
