@@ -105,12 +105,23 @@ When analyzing each protocol section, apply these diagnostic patterns:
   `unreachable_dst` (when present) is the actual host that could not be
   reached, extracted from the embedded inner IP header in the ICMP payload.
   Do NOT confuse `dst` (notification recipient) with the unreachable target.
-- TTL Exceeded (Type 11): If from multiple different sources, likely
-  traceroute. If the SAME source sends repeated TTL exceeded messages, this
-  is a routing loop — packets are bouncing between routers, decrementing
-  TTL each hop until expiry.
-- ICMP Redirect (Type 5): A router is telling a host to use a different
-  gateway. Can indicate suboptimal routing or a redirect-based MITM attack.
+- TTL Exceeded (Type 11): In ttl_exceeded_sources: `src` is the router that
+  dropped the packet; `dst` is the original sender receiving the error;
+  `original_dst` (when present) is the destination the packet was trying to
+  reach — this identifies which traffic is stuck in a routing loop.
+  If multiple different `src` routers report TTL exceeded for the same
+  `original_dst`, that is a multi-hop routing loop. If a single `src` router
+  sends repeated TTL exceeded for the same `original_dst`, packets are
+  bouncing at that hop. If `original_dst` values are all different, this is
+  likely normal traceroute probing, not a loop.
+- ICMP Redirect (Type 5): In redirect_details: `src` is the router sending
+  the redirect; `dst` is the host being redirected (notification recipient);
+  `gateway` is the new gateway the host should use instead; `redirect_for`
+  (when present) is the destination traffic the redirect applies to (inner IP
+  dst). A redirect telling a host to use a different gateway for traffic to a
+  specific destination can indicate suboptimal routing (benign) or a
+  redirect-based MITM attack (malicious) — correlate with whether the new
+  `gateway` is a known router or an unexpected host.
 - Unmatched echo requests: If >50% unmatched, the target or path has a
   serious reachability problem. If <10% unmatched, likely transient loss.
 
@@ -580,7 +591,7 @@ def run_tshark(pcap_path: Path, fields: list[str],
         raise RuntimeError(f"tshark failed: {result.stderr.strip()}")
 
     rows = []
-    for line in result.stdout.strip().split("\n"):
+    for line in result.stdout.rstrip("\n").split("\n"):
         if line:
             rows.append(line.split("\t"))
     return rows
@@ -651,10 +662,11 @@ def extract_icmp(pcap_path: Path) -> list[dict]:
         "frame.number", "frame.time_epoch", "icmp.type", "icmp.code",
         "icmp.seq", "icmp.resp_in", "frame.time_delta",
         "ip.src", "ip.dst",
+        "icmp.redir_gw",   # populated only for Type 5 (Redirect); empty otherwise
     ]
     packets = []
     for row in run_tshark(pcap_path, fields, "icmp"):
-        if len(row) < 9:
+        if len(row) < 10:
             continue
         packets.append({
             "frame": int(row[0]),
@@ -666,18 +678,21 @@ def extract_icmp(pcap_path: Path) -> list[dict]:
             "time_delta": _parse_optional_float(row[6]),
             "src_ip": _parse_str(row[7]),
             "dst_ip": _parse_str(row[8]),
+            "redir_gw": _parse_str(row[9]),
         })
 
-    # Second pass: extract the inner IP dst for ICMP Destination Unreachable
-    # (type 3) packets. Each such packet embeds the original IP header in its
-    # payload, producing two ip.dst fields. With -E occurrence=l, tshark
-    # returns the LAST ip.dst per packet — the inner header's dst, which is
-    # the actual unreachable destination (not the notification recipient).
+    # Second pass: extract the inner IP dst for all ICMP error types that
+    # embed the original IP header in their payload (Types 3, 5, and 11).
+    # Each such packet produces two ip.dst fields in tshark output:
+    #   first  = outer IP dst (notification recipient / original sender)
+    #   last   = inner IP dst (the actual destination the original packet
+    #             was trying to reach — the critical diagnostic value)
+    # With -E occurrence=l, tshark returns only the LAST ip.dst per row.
     inner_dst_by_frame: dict[int, str] = {}
     for row in run_tshark(
         pcap_path,
         ["frame.number", "ip.dst"],
-        "icmp.type == 3",
+        "icmp.type == 3 || icmp.type == 5 || icmp.type == 11",
         extra_opts=["-E", "occurrence=l"],
     ):
         if len(row) >= 2:
@@ -686,9 +701,14 @@ def extract_icmp(pcap_path: Path) -> list[dict]:
                 inner_dst_by_frame[int(row[0])] = inner_dst
 
     for pkt in packets:
-        if pkt.get("type") == 3:
+        if pkt.get("type") in (3, 5, 11):
             inner_dst = inner_dst_by_frame.get(pkt["frame"])
-            if inner_dst:
+            # Only set inner_dst_ip when the inner IP dst differs from the
+            # outer dst.  For well-formed ICMP error packets these are always
+            # different IPs.  The guard prevents a malformed/truncated packet
+            # (where tshark cannot parse the embedded IP header) from
+            # incorrectly inheriting the outer dst as its inner_dst_ip.
+            if inner_dst and inner_dst != pkt.get("dst_ip", ""):
                 pkt["inner_dst_ip"] = inner_dst
 
     return packets
@@ -928,44 +948,68 @@ def reduce_icmp(raw: list[dict]) -> dict:
         inner_dst = pkt.get("inner_dst_ip", "")
         key = (src, dst, code, inner_dst)
         if key not in unreach_groups:
-            entry: dict = {
+            unreach_entry: dict = {
                 "src": src, "dst": dst, "code": code,
                 "code_meaning": ICMP_UNREACH_CODES.get(code, f"Code {code}"),
                 "count": 0, "sample_frame": pkt["frame"],
             }
             if inner_dst:
-                entry["unreachable_dst"] = inner_dst
-            unreach_groups[key] = entry
+                unreach_entry["unreachable_dst"] = inner_dst
+            unreach_groups[key] = unreach_entry
         unreach_groups[key]["count"] += 1
     if unreach_groups:
         result["unreachable_details"] = list(unreach_groups.values())
 
     # Redirect details (Type 5)
-    redirect_groups: dict[str, dict] = {}
+    # src:          router that sent the redirect
+    # dst:          host being redirected (notification recipient)
+    # gateway:      new gateway the host should use (from ICMP redirect header)
+    # redirect_for: destination traffic the redirect applies to (inner IP dst)
+    redirect_groups: dict[tuple, dict] = {}
     for pkt in raw:
         if pkt.get("type") != 5:
             continue
         src = pkt.get("src_ip", "")
-        if src not in redirect_groups:
-            redirect_groups[src] = {
-                "src": src, "gateway": pkt.get("dst_ip", ""),
+        dst = pkt.get("dst_ip", "")
+        gateway = pkt.get("redir_gw", "")
+        redirect_for = pkt.get("inner_dst_ip", "")
+        key = (src, dst, gateway, redirect_for)
+        if key not in redirect_groups:
+            redir_entry: dict = {
+                "src": src, "dst": dst,
                 "count": 0, "sample_frame": pkt["frame"],
             }
-        redirect_groups[src]["count"] += 1
+            if gateway:
+                redir_entry["gateway"] = gateway
+            if redirect_for:
+                redir_entry["redirect_for"] = redirect_for
+            redirect_groups[key] = redir_entry
+        redirect_groups[key]["count"] += 1
     if redirect_groups:
         result["redirect_details"] = list(redirect_groups.values())
 
     # TTL Exceeded sources (Type 11)
-    ttl_groups: dict[str, dict] = {}
+    # src:          router that dropped the packet when TTL hit zero
+    # dst:          original sender that receives the error notification
+    # original_dst: destination the original packet was trying to reach (inner
+    #               IP dst) — identifies which traffic is stuck in a routing loop
+    ttl_groups: dict[tuple, dict] = {}
     for pkt in raw:
         if pkt.get("type") != 11:
             continue
         src = pkt.get("src_ip", "")
-        if src not in ttl_groups:
-            ttl_groups[src] = {
-                "src": src, "count": 0, "sample_frame": pkt["frame"],
+        dst = pkt.get("dst_ip", "")
+        original_dst = pkt.get("inner_dst_ip", "")
+        key = (src, original_dst)
+        if key not in ttl_groups:
+            ttl_entry: dict = {
+                "src": src, "dst": dst,
+                "count": 0, "sample_frame": pkt["frame"],
             }
-        ttl_groups[src]["count"] += 1
+            if original_dst:
+                ttl_entry["original_dst"] = original_dst
+            ttl_groups[key] = ttl_entry
+        ttl_groups[key]["count"] += 1
     if ttl_groups:
         result["ttl_exceeded_sources"] = list(ttl_groups.values())
 
