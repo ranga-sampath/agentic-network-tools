@@ -8,7 +8,7 @@ Built according to the principles of Deterministic Agency and Evidence Hierarchy
 
 ## Tools
 
-### 👻 [Ghost Agent — AI Network Forensics Investigator](./agentic-network-ghost-troubleshooter/)
+### 👻 [Ghost Agent — AI Network Forensics Investigator](./network-ghost-agent/)
 Conversational CLI that investigates Azure network problems autonomously. Describe a symptom; it forms hypotheses, runs Azure API queries and packet captures, gates every risky action through you, and produces a forensic RCA report.
 
 > Requires the three sibling libraries below. Clone the full repo.
@@ -31,7 +31,7 @@ git clone https://github.com/<your-org>/agentic-network-tools
 cd agentic-network-tools
 
 # Run Ghost Agent (uses all three sibling libraries)
-cd agentic-network-ghost-troubleshooter
+cd network-ghost-agent
 cp demo/sample_config.env demo/config.env   # fill in your Azure details
 export GEMINI_API_KEY="your-key"
 uv run --python 3.12 python ghost_agent.py --resource-group <your-rg> --location <region>

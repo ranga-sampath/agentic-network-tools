@@ -22,11 +22,11 @@ Ghost Agent is a conversational CLI that acts as a senior network forensics inve
 Ghost Agent requires three sibling modules from this repository. **Clone the full repo** — do not download this directory alone.
 
 ```
-ahentic-network-tools/
+agentic-network-tools/
 ├── agentic-safety-shell/            ← required: command execution safety layer
 ├── agentic-pcap-forensic-engine/    ← required: PCAP forensic analysis
 ├── agentic-cloud-orchestrator/      ← required: Azure packet capture orchestration
-└── agentic-network-ghost-troubleshooter/   ← you are here
+└── network-ghost-agent/             ← you are here
 ```
 
 ---
@@ -44,8 +44,8 @@ ahentic-network-tools/
 ## Installation
 
 ```bash
-git clone https://github.com/<your-org>/ahentic-network-tools
-cd ahentic-network-tools/agentic-network-ghost-troubleshooter
+git clone https://github.com/<your-org>/agentic-network-tools
+cd agentic-network-tools/network-ghost-agent
 ```
 
 Set your API key (or add to a `.env` file):
@@ -122,6 +122,6 @@ See `demo/README.md` for the full presenter guide and narration cues.
 ## Running Tests
 
 ```bash
-cd agentic-network-ghost-troubleshooter
+cd network-ghost-agent
 uv run pytest tests/ -v
 ```
