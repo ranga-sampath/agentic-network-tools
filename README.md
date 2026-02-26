@@ -8,7 +8,7 @@ Built according to the principles of Deterministic Agency and Evidence Hierarchy
 
 ## Tools
 
-### 👻 [Ghost Agent — AI Network Forensics Investigator](./network-ghost-agent/)
+### 👻 [Network Ghost Agent — AI Network Forensics Investigator](./network-ghost-agent/)
 Conversational CLI that investigates Azure network problems autonomously. Describe a symptom; it forms hypotheses, runs Azure API queries and packet captures, gates every risky action through you, and produces a forensic RCA report.
 
 > Requires the three sibling libraries below. Clone the full repo.
@@ -59,5 +59,5 @@ uv run python pcap_forensics.py your-capture.pcap
 
 ## ✍️ Writing & Deep Dives
 
-* **[Ghost Agent: An AI Network Forensics Investigator for Cloud Infrastructure](https://youplusai.com/ghost-network-agent/)** *A deep dive into encoding senior network engineering methodology into autonomous, safe-exec AI agents.*
+* **[Network Ghost Agent: An Agentic Network Forensics Investigator for Cloud Infrastructure](https://youplusai.com/network-ghost-agent/)** *A deep dive into encoding senior network engineering methodology into autonomous, safe-exec AI agents.*
 
