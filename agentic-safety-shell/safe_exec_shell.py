@@ -163,7 +163,7 @@ def _ip_is_risky(args: list[str]) -> bool:
 def _arp_is_risky(args: list[str]) -> bool:
     """arp: SAFE for -a/-n, RISKY for -d/-s."""
     for a in args[1:]:
-        if a.startswith("-") and ("d" in a or "s" in a):
+        if a.startswith("-") and not a.startswith("--") and ("d" in a or "s" in a):
             return True
     return False
 
@@ -194,14 +194,33 @@ def _networksetup_is_risky(args: list[str]) -> bool:
     return False
 
 
+_SYSTEM_WRITE_PATH_RE = re.compile(
+    r"^/(?:etc|usr|var|boot|sys|proc|dev|lib|sbin|bin)/"
+)
+
+
 def _tshark_is_risky(args: list[str]) -> bool:
-    """tshark: SAFE only with -r flag (read from file)."""
-    return "-r" not in args[1:]
+    """tshark: SAFE only with -r flag (read from file). RISKY if -w targets a system path."""
+    if "-r" not in args[1:]:
+        return True
+    for i, a in enumerate(args[1:], 1):
+        if a == "-w" and i + 1 < len(args) and _SYSTEM_WRITE_PATH_RE.match(args[i + 1]):
+            return True
+        if a.startswith("-w") and len(a) > 2 and _SYSTEM_WRITE_PATH_RE.match(a[2:]):
+            return True
+    return False
 
 
 def _tcpdump_is_risky(args: list[str]) -> bool:
-    """tcpdump: SAFE only with -r flag (read from file)."""
-    return "-r" not in args[1:]
+    """tcpdump: SAFE only with -r flag (read from file). RISKY if -w targets a system path."""
+    if "-r" not in args[1:]:
+        return True
+    for i, a in enumerate(args[1:], 1):
+        if a == "-w" and i + 1 < len(args) and _SYSTEM_WRITE_PATH_RE.match(args[i + 1]):
+            return True
+        if a.startswith("-w") and len(a) > 2 and _SYSTEM_WRITE_PATH_RE.match(a[2:]):
+            return True
+    return False
 
 
 _CURL_MUTATIVE_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
