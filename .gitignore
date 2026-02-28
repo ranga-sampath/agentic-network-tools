@@ -31,7 +31,7 @@ agentic-cloud-orchestrator/audit/
 agentic-network-ghost-troubleshooter/audit/
 
 # Demo config (contains real API keys and subscription IDs)
-agentic-network-ghost-troubleshooter/demo/config.env
+network-ghost-agent/demo/config.env
 
 # Cloud Orchestrator — examples and test run reports
 agentic-cloud-orchestrator/examples/
