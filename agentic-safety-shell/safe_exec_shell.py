@@ -316,7 +316,7 @@ def _classify_tier1(args: list[str]) -> Optional[bool]:
 # Tier 2 — Azure CLI verb rules
 # ---------------------------------------------------------------------------
 
-_AZ_SAFE_VERBS = frozenset({"list", "show", "get", "check", "exists", "wait", "show-status"})
+_AZ_SAFE_VERBS = frozenset({"list", "show", "get", "check", "exists", "wait", "show-status", "download"})
 
 _AZ_RISKY_VERBS = frozenset({
     "create", "delete", "update", "set", "add", "remove",
@@ -327,6 +327,8 @@ _AZ_RISKY_VERBS = frozenset({
 _AZ_SAFE_SPECIAL = frozenset({
     "show-topology",
     "show-next-hop",
+    "list-effective-nsg",
+    "list-effective-route-table",
 })
 
 
