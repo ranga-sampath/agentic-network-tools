@@ -19,13 +19,14 @@ Ghost Agent is a conversational CLI that acts as a senior network forensics inve
 
 ## Dependencies
 
-Ghost Agent requires three sibling modules from this repository. **Clone the full repo** — do not download this directory alone.
+Ghost Agent requires three sibling modules, plus Pipe Meter for performance measurement scenarios (use cases G–L). **Clone the full repo** — do not download this directory alone.
 
 ```
 agentic-network-tools/
 ├── agentic-safety-shell/            ← required: command execution safety layer
 ├── agentic-pcap-forensic-engine/    ← required: PCAP forensic analysis
 ├── agentic-cloud-orchestrator/      ← required: Azure packet capture orchestration
+├── agentic-pipe-meter/              ← required: VM-to-VM performance measurement (use cases G–L)
 └── network-ghost-agent/             ← you are here
 ```
 
@@ -82,7 +83,7 @@ uv run --python 3.12 python ghost_agent.py --resume <session-id>
 
 ## Demo Scripts
 
-Six end-to-end demo scenarios with full presenter guides are in `demo/`:
+Twelve end-to-end demo scenarios with full presenter guides are in `demo/`. Use cases A–F cover NSG, routing, and packet capture investigations. Use cases G–L add VM-to-VM performance measurement via Pipe Meter and require `agentic-pipe-meter/` to be present.
 
 | Use Case | Scenario | Duration |
 |---|---|---|
@@ -92,6 +93,12 @@ Six end-to-end demo scenarios with full presenter guides are in `demo/`:
 | D — "The Two-Headed Hydra" | Two independent NSG misconfigurations | ~10 min |
 | E — "The Phantom Route" | UDR black hole — NSG clean, traffic vanishes | ~15 min |
 | F — "The Silent Gatekeeper" | Service endpoint removed — storage silently fails | ~12 min |
+| G — "Bandwidth Heist" | 20% packet loss via tc netem → HIGH_VARIANCE throughput | ~12 min |
+| H — "Latency Landmine" | tc netem 100ms delay + 10% loss → HIGH_VARIANCE latency | ~12 min |
+| I — "Packet Grinder" | Combined loss + delay + corruption → both metrics degraded | ~15 min |
+| J — "The Shadow Firewall" | iptables DROP port 5001 invisible to NSG audit; PCAP proves OS-level block | ~20 min |
+| K — "The Bandwidth Thief" | tc tbf rate throttle + iptables ICMP drop — two independent OS-level faults | ~20 min |
+| L — "The Double Lock" | NSG deny + tc netem on the same dest VM — two faults, two remediations | ~15 min |
 
 ```bash
 # One-time setup
