@@ -37,5 +37,10 @@ network-ghost-agent/demo/config.env
 agentic-cloud-orchestrator/examples/
 agentic-cloud-orchestrator/tests/test-report.md
 
+# Pipe Meter — runtime session artifacts, shell audit logs, secrets, and test reports
+agentic-pipe-meter/audit/
+agentic-pipe-meter/config.env
+agentic-pipe-meter/tests/test-report.md
+
 # uv scaffold placeholder
 main.py
