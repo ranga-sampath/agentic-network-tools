@@ -20,16 +20,16 @@ chmod +x demo/00_prereqs.sh
 export GEMINI_API_KEY="<your key>"
 
 # 4. How to invoke ghost_agent
-#    Use Case A — NSG investigation (no captures needed):
-uv run --python 3.12 python ghost_agent.py \
-  --resource-group nw-forensics-rg
-
-#    Use Cases B & C — packet captures (include storage + location):
+#    Use Cases A-F — explicit flags (existing demos):
 uv run --python 3.12 python ghost_agent.py \
   --resource-group    nw-forensics-rg \
   --location          eastus \
   --storage-account   nwlogs080613 \
   --storage-container pktcaptures
+
+#    Use Cases G-I — unified config (Pipe Meter integration):
+#    GEMINI_API_KEY can also live in config.env; the --config flag loads it automatically.
+python ghost_agent.py --config demo/config.env
 ```
 
 ---
@@ -283,6 +283,118 @@ Paste the prompt from `demo/use_case_f/PROMPT.txt`.
 ```bash
 ./demo/use_case_f/teardown.sh
 # This restores nwlogs080613 to defaultAction=Allow before you run B or C
+```
+
+---
+
+---
+
+## Use Case G — "Bandwidth Heist"
+**OS-level bandwidth throttle — NSG clean, speeds drop 90% | ~12 minutes**
+
+### What this shows
+- Ghost Agent using Agentic Pipe Meter as a measurement tool (not just Azure API)
+- TC tbf (token-bucket filter) injected on dest VM's NIC: 100 Mbit/s cap on a 1 Gbps link
+- `run_pipe_meter(test_type="throughput")` → LOW_THROUGHPUT anomaly detected
+- Ghost Agent pivots to OS-level investigation: `az vm run-command invoke tc qdisc show`
+- Root cause: TC qdisc rule found — invisible to NSG, route table, and Azure platform APIs
+
+### Before the session
+```bash
+chmod +x demo/use_case_g/setup.sh demo/use_case_g/teardown.sh
+./demo/use_case_g/setup.sh
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_g/PROMPT.txt`.
+
+### What to narrate while it runs
+- **NSG + route queries (turns 1-2):** "Control plane looks completely clean. The agent isn't satisfied. It escalates to live measurement."
+- **run_pipe_meter fires:** "This is the Agentic Pipe Meter — a separate tool running an actual iperf throughput test between the two VMs. Watch the HITL gates as it opens the measurement port, starts the server, runs iterations."
+- **LOW_THROUGHPUT detected:** "P90 throughput: 93 Mbps. On a 1 Gbps VNet, that's a 90% drop. The anomaly is now quantified — not a feeling, an exact number."
+- **TC qdisc query via run-command:** "It's asking: 'does the OS have a traffic shaping rule?' — `tc qdisc show dev eth0`. And there it is: `tbf rate 100Mbit`."
+- **Money moment:** "NSG clean, routing clean, Azure portal shows nothing. The degradation was injected at the OS level — a Linux kernel traffic control rule. Only a live measurement tool catches this. That's why Ghost Agent integrates Pipe Meter."
+
+### After the demo
+```bash
+./demo/use_case_g/teardown.sh
+```
+
+---
+
+## Use Case H — "Latency Landmine"
+**OS-level latency injection — connections work, everything is painfully slow | ~12 minutes**
+
+### What this shows
+- TC netem (Network Emulator) injecting 50 ms ± 10 ms of artificial latency
+- qperf baseline on this VNet: ~0.1 ms; after injection: ~50 ms (50,000% increase)
+- `run_pipe_meter(test_type="latency")` → HIGH_LATENCY + HIGH_VARIANCE anomalies
+- Ghost Agent methodically eliminates NSG/DNS/routing hypotheses before reaching OS layer
+- `az vm run-command invoke tc qdisc show` → netem rule confirmed as root cause
+
+### Before the session
+```bash
+chmod +x demo/use_case_h/setup.sh demo/use_case_h/teardown.sh
+./demo/use_case_h/setup.sh
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_h/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Hypothesis formation:** "Notice the hypotheses: NSG ACL on latency-sensitive port, routing via NVA adding hops, DNS amplification, OS-level fault. It's thinking across the full stack before acting."
+- **NSG + route queries refuted:** "Both clean. The path to the VM is unobstructed at the Azure layer. The delay must be somewhere else."
+- **run_pipe_meter fires:** "Pipe Meter running qperf tcp_lat — the only way to actually observe the latency, not just theorize about it. 8 iterations."
+- **HIGH_LATENCY result:** "P90 latency: 52 ms. Standard deviation: ~8 ms. That's HIGH_VARIANCE — the jitter matches a netem rule, not a routing hop (which would be constant)."
+- **TC qdisc confirmation:** "One `tc qdisc show` call: `netem delay 50ms 10ms distribution normal`. Caught."
+- **Money moment:** "No packet capture needed. No Azure support ticket. A latency fault that was invisible to every Azure monitoring tool — found in under 10 minutes by measuring what was actually happening on the wire."
+
+### After the demo
+```bash
+./demo/use_case_h/teardown.sh
+```
+
+---
+
+## Use Case I — "Packet Grinder"
+**Random packet loss + corruption — intermittent failures that defy reproduction | ~15 minutes**
+
+### What this shows
+- The hardest class of network fault: 2% random loss + 1% corruption + 5 ms base latency
+- Intermittent failures that sometimes succeed on retry — the classic "it works when I watch it"
+- `run_pipe_meter(test_type="both")` → CONNECTIVITY_DROP anomaly across both latency and throughput
+- HIGH_VARIANCE in both metrics — statistical signature of random loss vs deterministic block
+- `az vm run-command invoke tc qdisc show` → combined netem rule with loss + delay + corrupt params
+
+### Before the session
+```bash
+chmod +x demo/use_case_i/setup.sh demo/use_case_i/teardown.sh
+./demo/use_case_i/setup.sh
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_i/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Intermittency framing:** "This is the worst kind of fault — it's not always broken. The user said 'sometimes it works on retry.' That's the signature of packet loss, not a deterministic block."
+- **NSG + route queries:** "Both clean. The control plane is not the problem. The agent knows this isn't an NSG block — those are deterministic."
+- **run_pipe_meter(test_type="both"):** "This time it's measuring both latency and throughput simultaneously. Because with loss you often see both spike: retransmits inflate latency, and TCP congestion drops throughput."
+- **CONNECTIVITY_DROP + HIGH_VARIANCE:** "Look at the variance: P90 latency 45 ms, min 5 ms, max 190 ms. That's random — not a fixed-delay rule. And throughput dropping to 40% of expected with massive variance. Classic loss signature."
+- **TC netem revealed:** "`loss 2% delay 5ms corrupt 1%` — a combined fault. Loss drives retransmits, delay adds up on retransmit paths, corruption forces checksum failures and more retransmits."
+- **Money moment:** "Intermittent failures are what burn SRE teams for days because you can never reproduce them on demand. Pipe Meter runs 8 iterations and the statistics tell the story — you don't need to catch it in the act."
+
+### After the demo
+```bash
+./demo/use_case_i/teardown.sh
 ```
 
 ---

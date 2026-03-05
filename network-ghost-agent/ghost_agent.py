@@ -26,6 +26,7 @@ from google.genai import types
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT / "agentic-safety-shell"))
 sys.path.insert(0, str(_ROOT / "agentic-cloud-orchestrator"))
+sys.path.insert(0, str(_ROOT / "agentic-pipe-meter"))
 
 from safe_exec_shell import SafeExecShell, HitlDecision   # noqa: E402
 from cloud_orchestrator import CloudOrchestrator           # noqa: E402
@@ -41,6 +42,25 @@ SESSION_FILE = "ghost_session.json"
 DEFAULT_MODEL = "gemini-2.0-flash"
 MAX_LOOP_TURNS = 50
 MAX_DENIALS_PER_HYPOTHESIS = 3
+
+
+def _load_ghost_config(path: str) -> dict:
+    """Parse a key=value shell config file; expand ${HOME}; return dict of strings."""
+    cfg: dict = {}
+    home = os.environ.get("HOME", "")
+    with open(path) as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            val = val.split("#")[0].strip().strip('"').strip("'")
+            val = val.replace("${HOME}", home)
+            cfg[key.strip()] = val
+    return cfg
+
 
 # ---------------------------------------------------------------------------
 # Session management
@@ -138,21 +158,30 @@ def terminal_hitl_callback(command: str, reasoning: str, risk_explanation: str, 
     _row("", "[A]pprove   [D]eny   [M]odify command")
     print("└" + "─" * (W - 2) + "┘")
 
-    choice = input("Your choice: ").strip().lower()
+    # Flush any buffered newlines from prior input() calls so they don't
+    # silently trigger a deny before the operator has a chance to respond.
+    try:
+        import termios
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:
+        pass  # non-POSIX platforms (Windows) — best-effort only
 
-    if choice == "a":
-        terminal_hitl_callback.captured_reason = ""
-        return HitlDecision(action="approve")
-
-    if choice == "m":
-        new_cmd = input("New command: ").strip()
-        terminal_hitl_callback.captured_reason = ""
-        return HitlDecision(action="modify", modified_command=new_cmd)
-
-    # Deny — capture optional reason before returning
-    reason = input("Denial reason (optional, press Enter to skip): ").strip()
-    terminal_hitl_callback.captured_reason = reason
-    return HitlDecision(action="deny")
+    while True:
+        choice = input("Your choice: ").strip().lower()
+        if choice == "a":
+            terminal_hitl_callback.captured_reason = ""
+            return HitlDecision(action="approve")
+        if choice == "d":
+            reason = input("Denial reason (optional, press Enter to skip): ").strip()
+            terminal_hitl_callback.captured_reason = reason
+            return HitlDecision(action="deny")
+        if choice == "m":
+            new_cmd = input("New command: ").strip()
+            terminal_hitl_callback.captured_reason = ""
+            return HitlDecision(action="modify", modified_command=new_cmd)
+        if choice == "":
+            continue  # swallow any stray buffered newline and re-prompt
+        print("  Invalid choice — please enter A, D, or M.")
 
 terminal_hitl_callback.captured_reason = ""
 
@@ -302,6 +331,46 @@ def _build_ghost_tools() -> types.Tool:
                 "recommended_actions":     S(type=T.ARRAY, items=S(type=T.STRING), description="Concrete next steps for the operator."),
             }, required=["confidence", "root_cause_summary"]),
         ),
+
+        types.FunctionDeclaration(
+            name="run_pipe_meter",
+            description=(
+                "Run the Agentic Pipe Meter to measure live network performance (latency and/or throughput) "
+                "between the configured source and destination VMs. Use this tool to collect quantitative "
+                "evidence of bandwidth throttling, latency spikes, or packet loss anomalies. "
+                "Anomaly types returned — HIGH_VARIANCE: measurements spread >50% (indicates jitter or "
+                "packet loss causing variable TCP performance); CONNECTIVITY_DROP: one or more iterations "
+                "measured zero (severe loss or complete blocking). "
+                "If anomaly detected: run az vm run-command invoke tc qdisc show on BOTH source and dest VMs "
+                "to find OS-level traffic control rules. "
+                "Results are written to the shared audit directory."
+            ),
+            parameters=S(type=T.OBJECT, properties={
+                "test_type": S(
+                    type=T.STRING,
+                    enum=["latency", "throughput", "both"],
+                    description="Which measurement to run: latency (qperf tcp_lat), throughput (iperf), or both.",
+                ),
+                "is_baseline": S(
+                    type=T.BOOLEAN,
+                    description="If true, stores this run as the baseline for future comparison.",
+                ),
+                "compare_baseline": S(
+                    type=T.BOOLEAN,
+                    description="If true, loads the stored baseline and compares current metrics against it.",
+                ),
+                "iterations": S(
+                    type=T.INTEGER,
+                    description="Number of measurement iterations (default 8). Use 3 for a quick check.",
+                ),
+                "reasoning": S(type=T.STRING, description=(
+                    "One sentence explaining why this measurement is needed."
+                )),
+                "hypothesis_id": S(type=T.STRING, description=(
+                    "ID of the active hypothesis this measurement is attributed to (e.g. 'H1')."
+                )),
+            }, required=["test_type", "reasoning"]),
+        ),
     ])
 
 # ---------------------------------------------------------------------------
@@ -330,6 +399,26 @@ AUTONOMOUS OPERATION (CRITICAL):
 INVESTIGATION FRAMEWORK:
 1. LOCAL DIAGNOSTICS FIRST — ping, dig, traceroute, ss, netstat, curl (GET only). Establish baseline before Azure operations.
 2. AZURE READ OPERATIONS — az <service> list/show/get. Read NSG rules, route tables, VNet peering, DNS zones.
+2b. PERFORMANCE MEASUREMENT — when the symptom is throughput degradation, high latency, or intermittent
+   packet loss AND Azure API checks (NSG, routes) are clean, call run_pipe_meter BEFORE escalating to
+   packet capture. run_pipe_meter runs live qperf/iperf tests between the VMs and returns quantified
+   anomaly evidence.
+   MANDATORY: for any symptom mentioning slow speeds, bandwidth drop, latency spike, or unreliable
+   connectivity — call run_pipe_meter after Azure API checks, before capture_traffic.
+   Anomaly types returned by run_pipe_meter:
+   • HIGH_VARIANCE     — measurements vary wildly (>50% spread); indicates packet loss or jitter
+   • CONNECTIVITY_DROP — one or more iterations measured 0; indicates severe loss or blocking
+   Interpreting run_pipe_meter results:
+   Anomaly types fire when measurements spread >50% (HIGH_VARIANCE) or reach zero (CONNECTIVITY_DROP).
+   But is_stable=True does NOT mean the network is healthy — it means the measurements were consistent.
+   Always evaluate absolute values against Azure VNet baselines: intra-VNet latency is sub-millisecond;
+   intra-VNet throughput for accelerated-networking VMs is multi-Gbps. Any result far outside these
+   baselines is evidence of a fault regardless of is_stable.
+   When pipe_meter shows degraded performance (anomaly OR abnormal absolute values) and Azure
+   control-plane checks are clean (NSG, routes OK), the most likely fault class is OS-level traffic
+   control on one of the VMs. Run: az vm run-command invoke tc qdisc show on BOTH source and dest VMs.
+   If pipe_meter results are fully within expected Azure baselines and no regression vs baseline,
+   rule out OS-level fault and escalate to capture_traffic.
 3. PACKET CAPTURE (only when local diagnostics are inconclusive AND failure is time-sensitive or intermittent):
    capture_traffic blocks until complete (download + forensic analysis done). On return:
    • status=task_completed → result contains report_path. Cat report_path directly — auto-approved (SAFE).
@@ -364,11 +453,13 @@ RESUME PROTOCOL (when is_resume=True):
 - If a previously CONFIRMED hypothesis is contradicted by new evidence, revert it to ACTIVE.
 
 TOOL DECISION RULES:
-Symptom                          First tool                                   If denied
-───────────────────────────────────────────────────────────────────────────────────────────
+Symptom                          First tool                                   If denied / next step
+─────────────────────────────────────────────────────────────────────────────────────────────────────
 Cannot reach Azure endpoint      az network nsg rule list (control plane)     capture_traffic
 DNS resolution failure in Azure  az network dns zone list / vnet show         capture_traffic
-Intermittent packet loss         capture_traffic (single-end first)           az network route-table
+Throughput degradation           run_pipe_meter(test_type="throughput")       az vm run-command on both VMs: tc qdisc show
+Latency spike / slow responses   run_pipe_meter(test_type="latency")          az vm run-command on both VMs: tc qdisc show
+Intermittent / unreliable link   run_pipe_meter(test_type="both")             az vm run-command on both VMs: tc qdisc show
 NSG/firewall suspected           az network nsg rule list --nsg-name <nsg>    az network nsg show
 Routing anomaly                  az network route-table route list            capture_traffic
   → confirm with: az network nic show-effective-route-table (see ROUTE CONFIRMATION PATTERN)
@@ -453,6 +544,12 @@ EVIDENCE HIERARCHY (highest fidelity first):
 3. [LOCAL/CLOUD] Active probe — live path result; LOCAL probes subject to ISP/VPN/ICMP limits.
 4. [LOCAL] Agent-reported state — engineer's machine view (ss, netstat, ip route).
 KEY RULE: [LOCAL] results NEVER override [CLOUD] API or PCAP findings.
+5. [PERF] Pipe Meter measurement — live qperf/iperf data between source and dest VMs.
+   Quantitative evidence for bandwidth throttling, latency spikes, or packet loss anomalies.
+   Anomaly types: HIGH_VARIANCE (spread >50%), CONNECTIVITY_DROP (iteration measured 0).
+   is_stable=True means measurements were consistent, NOT that the network is healthy.
+   Evaluate absolute values against Azure VNet baselines (sub-ms latency, multi-Gbps throughput).
+   Degraded absolute values are fault evidence even without an anomaly type.
 
 CONFLICT RESOLUTION:
 When two results contradict, trust the higher-fidelity source. State explicitly which result you
@@ -819,10 +916,122 @@ def _reconstruct_history(audit_dir: str, session_id: str, denial_reasons: dict |
     return history
 
 # ---------------------------------------------------------------------------
+# Pipe Meter handler
+# ---------------------------------------------------------------------------
+
+def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
+    """Invoke pipe_meter.py as a subprocess and return the measurement result summary."""
+    import subprocess
+
+    pm_path = _ROOT / "agentic-pipe-meter" / "pipe_meter.py"
+    if not pm_path.exists():
+        return {"status": "error", "error": f"pipe_meter.py not found at {pm_path}"}
+
+    # Validate required config values before launching subprocess
+    missing = [k for k in ("SOURCE_VM_PRIVATE_IP", "DEST_VM_PRIVATE_IP",
+                            "SOURCE_VM_PUBLIC_IP", "SSH_USER",
+                            "RESOURCE_GROUP", "STORAGE_ACCOUNT_NAME")
+               if not ghost_cfg.get(k)]
+    if missing:
+        return {"status": "error",
+                "error": f"Missing required config values: {', '.join(missing)}"}
+
+    audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
+
+    cmd = [
+        sys.executable, str(pm_path),
+        "--source-ip",              ghost_cfg.get("SOURCE_VM_PRIVATE_IP", ""),
+        "--dest-ip",                ghost_cfg.get("DEST_VM_PRIVATE_IP", ""),
+        "--source-public-ip",       ghost_cfg.get("SOURCE_VM_PUBLIC_IP", ""),
+        "--ssh-user",               ghost_cfg.get("SSH_USER", "azureuser"),
+        "--ssh-source-vm-key-path", ghost_cfg.get("SSH_SOURCE_VM_KEY_PATH", ""),
+        "--ssh-dest-vm-key-path",   ghost_cfg.get("SSH_DEST_VM_KEY_PATH", ""),
+        "--resource-group",         ghost_cfg.get("RESOURCE_GROUP", ""),
+        "--storage-account-name",   ghost_cfg.get("STORAGE_ACCOUNT_NAME", ""),
+        "--storage-container-name", ghost_cfg.get("STORAGE_CONTAINER_NAME", "pktcaptures"),
+        "--source-nsg-name",        ghost_cfg.get("SOURCE_VM_NSG_NAME", ""),
+        "--dest-nsg-name",          ghost_cfg.get("DEST_VM_NSG_NAME", ""),
+        "--audit-dir",              audit_dir,
+        "--test-type",              tool_args.get("test_type", "latency"),
+    ]
+    # Optional Azure context — pass when present so pipe_meter can skip lookups
+    for flag, key in [("--subscription-id", "SUBSCRIPTION_ID"),
+                      ("--location",         "LOCATION"),
+                      ("--vnet-name",        "VNET_NAME"),
+                      ("--subnet-name",      "SUBNET_NAME")]:
+        val = ghost_cfg.get(key, "")
+        if val:
+            cmd += [flag, val]
+    if tool_args.get("is_baseline"):
+        cmd.append("--is-baseline")
+    if tool_args.get("compare_baseline"):
+        cmd.append("--compare-baseline")
+    if "iterations" in tool_args:
+        cmd += ["--iterations", str(tool_args["iterations"])]
+
+    # Run with inherited stdin/stdout/stderr so HITL prompts are visible to the operator
+    start_time = time.time()
+    try:
+        proc = subprocess.run(cmd, timeout=600)
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "pipe_meter timed out after 600 seconds"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+    # Find result artifact written by THIS run — exclude pre-existing files from prior sessions
+    result_files = sorted(
+        [p for p in Path(audit_dir).glob("*_result.json")
+         if p.stat().st_mtime >= start_time - 1],  # 1s tolerance for filesystem clock skew
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not result_files:
+        return {
+            "status": "error",
+            "error": "pipe_meter did not produce a result artifact (preflight may have failed)",
+            "exit_code": proc.returncode,
+        }
+
+    try:
+        data = json.loads(result_files[-1].read_text())
+    except Exception as exc:
+        return {"status": "error", "error": f"Failed to parse result artifact: {exc}"}
+
+    summary: dict = {
+        "status":       "success",
+        "session_id":   data.get("test_metadata", {}).get("session_id", ""),
+        "test_type":    data.get("test_metadata", {}).get("test_type", ""),
+        "artifact":     str(result_files[-1]),
+    }
+    res = data.get("results", {})
+    if res.get("latency_p90") is not None:
+        summary["latency_p90_us"]  = res["latency_p90"]
+        summary["latency_min_us"]  = res.get("latency_min")
+        summary["latency_max_us"]  = res.get("latency_max")
+    if res.get("throughput_p90") is not None:
+        summary["throughput_p90_gbps"] = res["throughput_p90"]
+        summary["throughput_min_gbps"] = res.get("throughput_min")
+        summary["throughput_max_gbps"] = res.get("throughput_max")
+    summary["is_stable"]    = res.get("is_stable")
+    summary["anomaly_type"] = res.get("anomaly_type")
+
+    cmp = data.get("comparison", {})
+    if cmp.get("baseline_found"):
+        summary["comparison"] = {
+            "baseline_latency_p90_us":    cmp.get("baseline_latency_p90"),
+            "baseline_throughput_p90_gbps": cmp.get("baseline_throughput_p90"),
+            "delta_pct_latency":          cmp.get("delta_pct_latency"),
+            "delta_pct_throughput":       cmp.get("delta_pct_throughput"),
+        }
+
+    return {"status": "success", "pipe_meter_result": summary}
+
+
+# ---------------------------------------------------------------------------
 # Tool dispatch
 # ---------------------------------------------------------------------------
 
-def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator) -> dict:
+def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator,
+                   ghost_cfg: dict | None = None) -> dict:
     """Route a Gemini function call to shell.execute() or orchestrator.orchestrate()."""
     if tool_name == "run_shell_cmd":
         return shell.execute({
@@ -850,6 +1059,11 @@ def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator) -> dict
 
     if tool_name == "cleanup_task":
         return orchestrator.orchestrate({"intent": "cleanup_task","task_id": tool_args["task_id"]})
+
+    if tool_name == "run_pipe_meter":
+        if not ghost_cfg:
+            return {"status": "error", "error": "run_pipe_meter requires --config to be set at startup"}
+        return _run_pipe_meter_handler(ghost_cfg, tool_args)
 
     return {"status": "error", "error": "unknown_tool", "tool": tool_name}
 
@@ -1273,7 +1487,7 @@ def _offer_cleanup_before_rca(state: dict, orchestrator, session_file: str):
 # ---------------------------------------------------------------------------
 
 def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, client, session_file: str,
-              effective_system_prompt: str = SYSTEM_PROMPT):
+              effective_system_prompt: str = SYSTEM_PROMPT, ghost_cfg: dict | None = None):
     """Main reasoning loop. Exits via complete_investigation or MAX_LOOP_TURNS."""
     model     = state["model"]
     max_turns = MAX_LOOP_TURNS
@@ -1449,7 +1663,7 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
                 _offer_cleanup_before_rca(state, orchestrator, session_file)
                 return
 
-            result = _dispatch_tool(tool_name, tool_args, shell, orchestrator)
+            result = _dispatch_tool(tool_name, tool_args, shell, orchestrator, ghost_cfg=ghost_cfg)
 
             # Track task IDs for capture operations; clear on explicit cleanup
             if tool_name == "capture_traffic":
@@ -1506,7 +1720,33 @@ def main():
                         help="Default Azure storage account for packet captures")
     parser.add_argument("--storage-container",  default="",  metavar="CONTAINER",
                         help="Default Azure storage container for packet captures")
+    parser.add_argument("--config",             default=None, metavar="FILE",
+                        help="Path to a config.env file (e.g. demo/config.env). Values are used as "
+                             "defaults and can be overridden by explicit flags above.")
     args = parser.parse_args()
+
+    # Load config.env if provided; populate missing CLI args from it
+    ghost_cfg: dict = {}
+    if args.config:
+        try:
+            ghost_cfg = _load_ghost_config(args.config)
+        except FileNotFoundError:
+            print(f"[ERROR] --config file not found: {args.config}")
+            sys.exit(1)
+        # Apply config values as defaults for any unset CLI args
+        if not args.resource_group:
+            args.resource_group = ghost_cfg.get("RESOURCE_GROUP", "")
+        if not args.location:
+            args.location = ghost_cfg.get("LOCATION", "")
+        if not args.storage_account:
+            args.storage_account = ghost_cfg.get("STORAGE_ACCOUNT_NAME", "")
+        if not args.storage_container:
+            args.storage_container = ghost_cfg.get("STORAGE_CONTAINER_NAME", "")
+        if not args.audit_dir or args.audit_dir == DEFAULT_AUDIT_DIR:
+            args.audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
+        # Also load GEMINI_API_KEY from config if not in environment
+        if not os.environ.get("GEMINI_API_KEY") and ghost_cfg.get("GEMINI_API_KEY"):
+            os.environ["GEMINI_API_KEY"] = ghost_cfg["GEMINI_API_KEY"]
 
     # Guard: GEMINI_API_KEY must be present before any sub-module is instantiated
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -1645,7 +1885,7 @@ def main():
 
     try:
         _run_loop(state, history, shell, orchestrator, ghost_tools, client, SESSION_FILE,
-                  effective_system_prompt=effective_prompt)
+                  effective_system_prompt=effective_prompt, ghost_cfg=ghost_cfg)
     except KeyboardInterrupt:
         print(f"\n\n[Ghost Agent] Interrupted — saving session…")
         save_session(state, SESSION_FILE)

@@ -1,0 +1,1 @@
+Our file transfer pipeline between tf-source-vm (10.0.1.4) and tf-dest-vm (10.0.1.5) has slowed to a crawl — speeds that should be near 1 Gbps are now barely usable. NSG rules look clean and both VMs are reachable. No Azure platform alerts have fired. Investigate the throughput degradation in resource group nw-forensics-rg and find the root cause.

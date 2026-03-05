@@ -131,17 +131,30 @@ else
   fail "Storage account '$STORAGE_ACCOUNT_NAME' not found"
 fi
 
-CONTAINER_EXISTS=$(az storage container exists \
-                     --name "$STORAGE_CONTAINER_NAME" \
-                     --account-name "$STORAGE_ACCOUNT_NAME" \
-                     --auth-mode login \
-                     --query "exists" -o tsv 2>/dev/null || echo "false")
-if [[ "$CONTAINER_EXISTS" == "true" ]]; then
-  ok "Storage container '$STORAGE_CONTAINER_NAME' exists"
+# Check if VNet firewall restricts data-plane access from local machine
+SA_DEFAULT_ACTION=$(az storage account show \
+  -n "$STORAGE_ACCOUNT_NAME" -g "$RESOURCE_GROUP" \
+  --query "networkRuleSet.defaultAction" -o tsv 2>/dev/null || echo "Allow")
+if [[ "$SA_DEFAULT_ACTION" == "Deny" ]]; then
+  warn "Storage container check skipped — storage account has VNet firewall rules (defaultAction=Deny)."
+  warn "Data-plane access from this machine is blocked. Pipe Meter uses SAS+curl via the source VM."
+  warn "Verify the container exists with: az vm run-command invoke --resource-group $RESOURCE_GROUP \\"
+  warn "  --name $SOURCE_VM_NAME --command-id RunShellScript \\"
+  warn "  --scripts 'az storage container exists -n $STORAGE_CONTAINER_NAME --account-name $STORAGE_ACCOUNT_NAME --auth-mode login'"
+  PASS=$((PASS + 1))
 else
-  fail "Storage container '$STORAGE_CONTAINER_NAME' not found. Create with:"
-  echo "       az storage container create -n $STORAGE_CONTAINER_NAME \\"
-  echo "         --account-name $STORAGE_ACCOUNT_NAME --auth-mode login"
+  CONTAINER_EXISTS=$(az storage container exists \
+                       --name "$STORAGE_CONTAINER_NAME" \
+                       --account-name "$STORAGE_ACCOUNT_NAME" \
+                       --auth-mode login \
+                       --query "exists" -o tsv 2>/dev/null || echo "false")
+  if [[ "$CONTAINER_EXISTS" == "true" ]]; then
+    ok "Storage container '$STORAGE_CONTAINER_NAME' exists"
+  else
+    fail "Storage container '$STORAGE_CONTAINER_NAME' not found. Create with:"
+    echo "       az storage container create -n $STORAGE_CONTAINER_NAME \\"
+    echo "         --account-name $STORAGE_ACCOUNT_NAME --auth-mode login"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
