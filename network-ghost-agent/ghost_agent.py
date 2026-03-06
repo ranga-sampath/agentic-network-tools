@@ -415,8 +415,9 @@ INVESTIGATION FRAMEWORK:
    intra-VNet throughput for accelerated-networking VMs is multi-Gbps. Any result far outside these
    baselines is evidence of a fault regardless of is_stable.
    When pipe_meter shows degraded performance (anomaly OR abnormal absolute values) and Azure
-   control-plane checks are clean (NSG, routes OK), the most likely fault class is OS-level traffic
-   control on one of the VMs. Run: az vm run-command invoke tc qdisc show on BOTH source and dest VMs.
+   control-plane checks are clean (NSG, routes OK), pipe_meter results are the trigger for
+   investigating OS-level traffic shaping or filtering on the source and/or destination VMs.
+   Investigate both VMs — the fault may be on either endpoint, not only the source.
    If pipe_meter results are fully within expected Azure baselines and no regression vs baseline,
    rule out OS-level fault and escalate to capture_traffic.
 3. PACKET CAPTURE (only when local diagnostics are inconclusive AND failure is time-sensitive or intermittent):
@@ -446,6 +447,38 @@ HYPOTHESIS MANAGEMENT:
   as the first tool call before any diagnostic command. This handles cases where the
   initial manage_hypotheses call was dropped (e.g., due to an API error on the first turn).
 
+MULTI-SYMPTOM INVESTIGATIONS:
+When the problem statement describes more than one distinct observable symptom (e.g., slow
+transfers AND connectivity failures; latency spikes AND connection resets), treat each as a
+separate investigative thread that requires its own confirmed cause.
+- At hypothesis-formation time, note explicitly which symptom(s) each hypothesis is intended
+  to explain. A single hypothesis should not be assumed to cover unrelated symptoms.
+- A finding that confirms the cause of symptom A does NOT automatically explain symptom B.
+  Only mark symptom B as explained when you have direct evidence specific to symptom B.
+- MANDATORY PRE-COMPLETION CHECKLIST: Before calling complete_investigation, explicitly
+  work through every distinct symptom from the problem statement in sequence:
+  (a) Name the symptom as stated.
+  (b) State the specific mechanism identified as its cause.
+  (c) Verify mechanism-symptom consistency: the proposed mechanism must be capable of
+      producing this specific symptom in isolation. Ask — if only this mechanism were
+      present and nothing else, would this symptom occur? If the answer is no or uncertain,
+      the symptom is not yet explained.
+  (d) Cite the specific audit_id that provides direct evidence for this symptom.
+  Only after completing (a)–(d) for every symptom may you call complete_investigation.
+  If any symptom fails (c) or has no direct audit_id for (d), register a new hypothesis
+  and continue investigating. This checklist applies regardless of confidence level —
+  a confident but incorrect attribution is still an incorrect attribution.
+- Apply fault-class reasoning when attributing causes. Different network fault classes produce
+  mechanically distinct symptom signatures that cannot be conflated:
+  • A throughput-limiting mechanism (rate cap, shaper) does not selectively block a specific
+    protocol — it limits overall bandwidth proportionally across all traffic. If one protocol
+    is completely unreachable while another passes (even at degraded throughput), a selective
+    DROP or DENY rule targeting that protocol is the more likely cause.
+  • An intermittent fault (packet loss, jitter) produces variable measurements across attempts.
+    A stable fault (rate cap, misconfiguration) produces consistent measurements near a ceiling.
+  If the symptoms in the problem statement require different fault classes to explain them,
+  report them as separate, independent findings with separate recommended actions.
+
 RESUME PROTOCOL (when is_resume=True):
 - Network state may have changed since interruption. Do NOT assume prior evidence is current.
 - Re-run the 2-3 most critical diagnostic commands from the prior session before continuing.
@@ -474,10 +507,13 @@ considering packet capture:
      Look for: defaultAction=Deny AND virtualNetworkRules listing your subnet.
   2. az network vnet subnet show -g <RG> --vnet-name <VNet> --name <subnet> --query "serviceEndpoints"
      Look for: Microsoft.Storage in the list.
-A VNet network rule on the storage account ONLY authenticates traffic when the subnet has a
-matching Microsoft.Storage service endpoint. If the rule is present but the endpoint is absent,
-VM traffic is routed to the public storage endpoint and rejected by defaultAction: Deny — even
-though "the VNet is configured." This mismatch is invisible to NSG and route investigation.
+A VNet network rule on the storage account ONLY takes effect when the subnet has a matching
+Microsoft.Storage service endpoint. The service endpoint causes outbound storage traffic from
+VMs in that subnet to be routed over the Azure backbone with the VM's private IP as the source,
+which is what the VNet network rule matches against. If the endpoint is absent, VM traffic exits
+via the public internet NAT IP, which does not match the VNet rule — and defaultAction: Deny
+rejects it, even though "the VNet is configured." This mismatch is invisible to NSG and route
+investigation.
 Do NOT attempt packet capture for this class of failure — it is a control-plane configuration
 mismatch. Wire-level data cannot disambiguate it.
 
