@@ -1,3 +1,9 @@
+#Social media posts or blog posts
+posts/
+
+# Conceptual documents
+concepts/
+
 # Secrets
 .env
 *.pem

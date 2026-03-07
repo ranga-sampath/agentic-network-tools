@@ -236,8 +236,8 @@ between two components.
 
   The broken relationship:
     The storage firewall only recognises traffic as "from subnet X" if the
-    subnet has a service endpoint that tags outbound traffic with a VNet
-    identity token. Without it, the VM's traffic arrives at the storage
+    subnet has a service endpoint that presents the subnet's identity to the
+    PaaS service. Without it, the VM's traffic arrives at the storage
     public endpoint — which the firewall rejects by default.
 
   Inspect A alone: ✓     Inspect B alone: ✓     Inspect the relationship: ✗
@@ -280,6 +280,45 @@ default to confirmation bias.
 diagnostic system. When sources contradict, always trust the higher-fidelity source
 and document exactly why the lower-fidelity result was discarded. Encode this
 hierarchy in any automated reasoning system — the model has no instinct for it.
+
+---
+
+### 3.5 The Third Filtering Layer: OS-Level Packet Filtering Is Invisible to Cloud Control-Plane APIs
+
+The cloud control plane exposes two filtering layers — subnet NSG and NIC NSG —
+and provides structured APIs for both. A third layer exists at every VM: the
+OS-level packet filter (iptables/nftables on Linux; Windows Firewall on Windows).
+This layer is structurally invisible to the cloud control plane. No cloud API
+returns parsed OS firewall state. A NIC with fully permissive NSG rules at both
+cloud layers can silently drop or reject traffic due to an OS rule that no portal
+view, no CLI query, and no policy evaluation will surface.
+
+```
+  Inbound traffic path:
+
+  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────────────┐
+  │   Subnet NSG     │ → │    NIC NSG       │ → │  OS firewall             │
+  │                  │   │                  │   │  (iptables / nftables)   │
+  │  Cloud API ✓     │   │  Cloud API ✓     │   │  No cloud API ✗          │
+  └──────────────────┘   └──────────────────┘   └──────────────────────────┘
+         ↑                      ↑                          ↑
+    Structured,            Structured,              Raw command output
+    queryable              queryable                only — no parsed API
+```
+
+The OS-layer gap is compounded on modern Linux distributions by the coexistence
+of iptables and nftables. Rules created via `nft` directly are invisible to
+`iptables -L` — an engineer checking only iptables on a RHEL 8 or Ubuntu 20.04
+VM may conclude the OS firewall is permissive while an active nftables rule is
+silently dropping traffic.
+
+**Lesson:** Any diagnostic system that stops at the NIC NSG has structurally
+missed a filtering layer. Design diagnostic workflows to treat OS-level firewall
+state as a mandatory check when the cloud control plane is clean and traffic is
+still failing. This layer requires active inspection — SSH access or a VM
+run-command invocation — and returns unstructured text that must be parsed.
+Treating it as an afterthought means the hardest class of failures will
+consistently reach the end of your diagnostic checklist unresolved.
 
 ---
 
@@ -371,6 +410,163 @@ to skip.
 
 ---
 
-*Extracted from development of Ghost Agent — an AI-powered network forensics CLI
-combining Gemini tool-use, Azure infrastructure APIs, human-in-the-loop safety
-gating, and forensic audit trail requirements.*
+## Theme 5 — Network Performance Measurement as a Discipline
+
+> **Scope:** This theme applies to anyone designing or operating network performance
+> measurement tooling — standalone or embedded in a larger diagnostic pipeline.
+> The patterns here reflect what distinguishes rigorous measurement from a reading,
+> and are applicable across cloud providers and transport protocols.
+
+The difference between a measurement and a reading is discipline. A reading
+is whatever the tool returned. A measurement is a value you can defend, reproduce,
+and compare meaningfully over time.
+
+### 5.1 Cold-Start Bias Is Systematic: Warmup and Statistic Selection Are Inseparable
+
+The first result in any TCP performance test is drawn from a different distribution
+than subsequent results. TCP slow start has not completed, receive buffers are not
+fully allocated, and ARP cache may not be populated — all introducing a systematic
+bias into the first sample. A single unrecorded warm-up pass before data collection
+eliminates this bias at minimal cost.
+
+The choice of summary statistic is inseparable from this decision. P90 is
+appropriate when the SLA tolerates the worst 10% of experiences. For
+latency-sensitive workloads — trading systems, real-time voice, control-plane APIs
+— P99 or P99.9 captures the tail that actually matters. For sustained throughput
+governed by average capacity, a mean is more representative than any percentile.
+Defaulting to "average" or "P90" because it is familiar means you may be measuring
+a different quantity than your SLA requires.
+
+```
+  8 latency samples (µs), no warmup: [842, 124, 127, 119, 121, 125, 123, 126]
+                                        ↑ cold-start outlier
+
+  Mean (all 8 samples):   225.9 µs  ← systematically wrong
+  P90  (all 8 samples):   342.6 µs  ← systematically wrong
+
+  Mean (samples 2–8, after warmup):  123.6 µs  ← correct
+  P90  (samples 2–8, after warmup):  126.4 µs  ← correct
+```
+
+**Lesson:** A warm-up pass is the minimal correct implementation of any TCP
+performance measurement — not optional, not a heuristic. The P-statistic must
+follow from the SLA being tested. These two decisions are coupled: make them
+together and explicitly, or the resulting numbers are defensible only by accident.
+
+---
+
+### 5.2 Measurement Direction Asymmetry: A→B Is Not B→A
+
+Throughput and latency from VM A to VM B are not guaranteed to equal measurements
+in the reverse direction — even on the same physical host pair, in the same
+availability zone, with identical VM SKUs and identical accelerated networking
+configuration.
+
+Transmission performance is governed by the sender: TCP segmentation offloading
+(TSO), send buffer sizing, and pacing all operate on the transmit path.
+Reception performance is governed by the receiver: Receive Side Scaling (RSS)
+maps incoming flows to CPU cores based on a hash of the 5-tuple, and hardware
+receive queue depth limits how many parallel streams a NIC can sustain without
+dropping. Two VMs with identical configurations can produce materially different
+throughput in opposite directions because their RSS mappings resolve differently
+against the underlying hardware and the specific flow hashes used by the test.
+
+```
+  In one scenario (same VNet, same SKU, accelerated networking enabled on both):
+
+  VM-A → VM-B:  9.4 Gbps  (VM-B's RSS distributes 8 streams across 4 cores)
+  VM-B → VM-A:  6.1 Gbps  (VM-A's RSS maps 8 streams to 2 cores — CPU-bound on receive)
+
+  The asymmetry is in the receiver's RSS configuration, not in the network path.
+```
+
+**Lesson:** A unidirectional measurement characterises the path in one direction
+only. Any performance baseline or SLA validation that does not account for
+direction is potentially incomplete. Decide whether your use case requires
+unidirectional or bidirectional measurement, make that decision explicit, and
+document which direction was measured. The default assumption of symmetry is
+frequently wrong in production environments.
+
+---
+
+### 5.3 Absolute Thresholds and Baseline Regression Detection Answer Different Questions
+
+Two distinct measurement questions are routinely conflated in performance tooling:
+"Is this path behaving acceptably right now?" and "Has this path regressed from a
+prior known-good state?" The first requires an absolute threshold derived from the
+application's SLA. The second requires a stored baseline — a reference measurement
+from a known-good point — against which percentage delta is computed.
+
+A path can satisfy every absolute threshold while showing a material regression
+versus baseline — the critical signal after a change window that an absolute check
+will never surface. Conversely, a high-jitter path (cross-region, over a shared
+internet exchange) may routinely exceed a variance threshold while being perfectly
+consistent with its own historical baseline, making the absolute threshold produce
+persistent false positives that the baseline comparison correctly suppresses.
+
+```
+  Path state after a maintenance window:
+
+  Latency P90:      142 µs    ← within the 200 µs SLA ceiling          ✓
+  vs. baseline:     +18%      ← material regression from prior 120 µs  ✗
+
+  Absolute check alone:   PASS  ← misses the regression
+  Baseline comparison:    FLAG  ← catches it
+
+  The two tools answer different questions.
+  Implementing only one leaves a blind spot the other would have caught.
+```
+
+**Lesson:** Implement both. Absolute thresholds catch paths that violate SLA
+requirements. Baseline comparison catches paths that are regressing — the more
+sensitive signal for post-change validation and trend analysis. Design your
+measurement system to store baselines at known-good moments (post-deployment,
+post-change-window) and to run comparison as a first-class operation alongside
+absolute checks. Neither subsumes the other.
+
+---
+
+### 5.4 The Measurement Tool Reports Observations; the Diagnostic Layer Assigns Causes
+
+When a measurement produces multiple anomalous results simultaneously — degraded
+throughput on one protocol, complete connection failure on another — the temptation
+is to synthesise them into a single verdict at the measurement layer. This is a
+separation-of-concerns error.
+
+The measurement tool has evidence of what happened to the packets it sent. It has
+no evidence of why. Causal attribution requires access to NSG rules, route tables,
+OS firewall state, packet captures — evidence that lives in the diagnostic layer
+above. A tool that conflates measurement with attribution makes both worse: the
+measurement becomes interpretation-dependent, and the diagnostic layer loses the
+independent raw observations it needs to reason correctly.
+
+```
+  Measurement layer returns two independent observations:
+    throughput_p90:          4.2 Gbps    (HIGH_VARIANCE — baseline 9.4 Gbps)
+    latency_connectivity:    FAILED      (server unreachable — zero samples)
+
+  Incorrect design — measurement layer synthesises:
+    → "path degraded, likely due to packet loss"
+
+  Correct design — diagnostic layer reasons over both observations independently:
+    • A rate-limiting fault reduces throughput proportionally across all traffic
+      — it does not cause complete connection failure on a separate protocol
+    • Two observations, mechanically distinct failure signatures
+      → two independent hypotheses, two independent investigations
+```
+
+**Lesson:** Keep the measurement contract narrow and factual: values, units, sample
+counts, and anomaly flags. Reserve causal language for the layer that has access
+to the full evidence set. A diagnostic system that receives pre-synthesised
+conclusions cannot perform independent hypothesis testing — it can only confirm or
+deny what the measurement layer already decided, which is the wrong place to decide
+it.
+
+---
+
+*Extracted from development of an AI-driven network forensics and performance
+measurement system for cloud infrastructure — combining LLM tool-use, Azure
+infrastructure APIs, human-in-the-loop safety gating, and forensic audit trail
+requirements across a suite of tools covering autonomous network investigation,
+VM-to-VM performance measurement, packet capture forensics, and safe command
+execution.*
