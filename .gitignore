@@ -1,9 +1,8 @@
 #Social media posts or blog posts
 posts/
 
-# Conceptual documents and project plans
+# Conceptual documents
 concepts/
-plans/
 
 # Secrets
 .env
