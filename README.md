@@ -25,6 +25,9 @@ AI-powered packet inspection engine. Feeds a `.pcap` or `.cap` file through `tsh
 ### ☁️ [Agentic Cloud Orchestrator](./agentic-cloud-orchestrator/)
 Azure Network Watcher packet capture lifecycle manager. Handles capture creation, status polling, blob download, and forensic analysis as a single audited async task. Usable as a standalone library.
 
+### 🔥 [Netfilter Inspector](./netfilter-inspector/)
+OS-layer firewall state capture and drift detection for Linux VMs. Retrieves `iptables`/`ip6tables` rulesets from any SSH-accessible VM (Azure, Multipass, bare-metal), stores point-in-time baseline snapshots, and diffs against a prior baseline to detect configuration drift. Classifies changes by security significance (DROP/REJECT rule additions, default policy changes) and suppresses ephemeral chain noise (Kubernetes pod chains). Covers both IPv4 and IPv6 in a single operation. Usable as a standalone CLI tool or as an integrated component of Ghost Agent for OS-layer firewall investigation scenarios.
+
 ---
 
 ## Quick Start
@@ -37,12 +40,18 @@ cd agentic-network-tools
 cd network-ghost-agent
 cp demo/sample_config.env demo/config.env   # fill in your Azure details
 export GEMINI_API_KEY="your-key"
-uv run --python 3.12 python ghost_agent.py --resource-group <your-rg> --location <region>
+python ghost_agent.py --config demo/config.env
 
 # Measure VM-to-VM latency and throughput with Pipe Meter
 cd agentic-pipe-meter
 cp config.env.example config.env   # fill in your Azure details
 uv run python pipe_meter.py --config config.env
+
+# Capture OS-layer firewall baseline and compare
+cd netfilter-inspector/firewall-inspector
+cp config.env.example config.env   # fill in VM details
+python3 firewall_inspector.py --config config.env --is-baseline --session-id pre_change
+python3 firewall_inspector.py --config config.env --compare-baseline pre_change
 
 # Use the Safety Shell standalone
 cd agentic-safety-shell
@@ -57,11 +66,12 @@ uv run python pcap_forensics.py your-capture.pcap
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.12+ (3.9+ sufficient for Netfilter Inspector standalone)
 - [uv](https://docs.astral.sh/uv/) package manager
 - Azure CLI (`az login`) — for Ghost Agent, Pipe Meter, and Cloud Orchestrator
 - `tshark` — for PCAP Forensic Engine
 - `qperf` and `iperf2` on both VMs — for Pipe Meter (Pipe Meter can install them with your approval)
+- SSH key access to target VM — for Netfilter Inspector (`--provider ssh`)
 - A Gemini API key from [aistudio.google.com](https://aistudio.google.com)
 
 ---

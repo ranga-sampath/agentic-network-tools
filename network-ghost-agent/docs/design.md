@@ -6,9 +6,9 @@
 
 ---
 
-## 1. Tool-Use Contract: Six Gemini Function Declarations
+## 1. Tool-Use Contract: Eight Gemini Function Declarations
 
-The Brain interacts with the world exclusively through these six declared tools. Every tool maps to either `shell.execute()` or `orchestrator.orchestrate()`. No tool reaches below this boundary.
+The Brain interacts with the world exclusively through these eight declared tools. Every tool maps to either `shell.execute()`, `orchestrator.orchestrate()`, or a dedicated subprocess handler. No tool reaches below this boundary.
 
 The tool set is passed to `generate_content()` as:
 
@@ -19,6 +19,8 @@ genai.types.Tool(function_declarations=[
     check_task_decl,
     cancel_task_decl,
     cleanup_task_decl,
+    run_pipe_meter_decl,
+    detect_config_drift_decl,
     complete_investigation_decl,
 ])
 ```
@@ -228,7 +230,121 @@ Response shape:
 
 ---
 
-### Tool 6: `complete_investigation`
+### Tool 6: `run_pipe_meter`
+
+**Maps to:** `_run_pipe_meter_handler(ghost_cfg, tool_args)` — direct subprocess call (not via SafeExecShell)
+**When:** Quantitative path performance measurement is needed (latency, throughput, or both).
+
+```
+FunctionDeclaration:
+  name: "run_pipe_meter"
+  description: |
+    Run an end-to-end latency and/or throughput measurement between the source and
+    destination VMs using qperf and iperf2. Use when: (a) you need quantitative evidence
+    of a performance fault; (b) you want to confirm or rule out a bandwidth or latency
+    anomaly; (c) you want to bracket a change window with before/after measurements.
+    All operations are read-only (SAFE) — no HITL gate required.
+  parameters:
+    type: OBJECT
+    properties:
+      test_type:
+        type: STRING
+        enum: [latency, throughput, both]
+      is_baseline:
+        type: BOOLEAN
+        description: Store this result as the baseline for future --compare-baseline runs.
+      compare_session_id:
+        type: STRING
+        description: Session ID of a prior baseline to compare against.
+      session_id:
+        type: STRING
+        description: Override the auto-generated session ID.
+      reasoning:
+        type: STRING
+        description: Why this measurement is being taken in the current investigation.
+      hypothesis_id:
+        type: STRING
+        description: Hypothesis this measurement is intended to confirm or refute.
+    required: [test_type, reasoning]
+
+Response shape:
+  status:              "success" | "error"
+  test_type:           "latency" | "throughput" | "both"
+  latency_p90_us:      float | null
+  throughput_p90_gbps: float | null
+  is_stable:           boolean
+  anomaly_type:        str | null
+  comparison:          {baseline_latency_p90_us, delta_pct_latency, ...} | null
+  artifact:            path to *_result.json
+```
+
+---
+
+### Tool 7: `detect_config_drift`
+
+**Maps to:** `_run_firewall_inspector_handler(ghost_cfg, tool_args)` — direct subprocess call (not via SafeExecShell)
+**When:** OS-layer firewall inspection is needed; Azure NSG/route checks are clean but traffic is still blocked.
+**Mode constraint:** `is_baseline=True` and `compare_session_id` are mutually exclusive workflows. Never call compare immediately after baseline in the same session — the baseline session_id just captured is not a valid compare target (trivially empty diff). A compare is only valid against a baseline from a prior run or change window.
+
+```
+FunctionDeclaration:
+  name: "detect_config_drift"
+  description: |
+    Probe a target VM's OS-layer firewall (iptables/nftables) and optionally compare
+    against a stored baseline. Use when Azure control-plane checks (NSG, routes) are
+    clean but traffic is still blocked, or for "nothing changed but it broke" scenarios.
+    provider=azure uses az vm run-command (requires FW_VM_NAME in config.env).
+    provider=ssh uses direct SSH (requires FW_TARGET_VM_IP and FW_SSH_KEY_PATH in config.env).
+    All operations are read-only (SAFE) — no HITL gate required.
+  parameters:
+    type: OBJECT
+    properties:
+      provider:
+        type: STRING
+        enum: [azure, ssh]
+        description: |
+          "azure" — probe via az vm run-command (no SSH key needed; requires VM contributor role).
+          "ssh" — probe via direct SSH (requires FW_TARGET_VM_IP and FW_SSH_KEY_PATH in config).
+      is_baseline:
+        type: BOOLEAN
+        description: Capture a snapshot as a named baseline for future drift comparisons.
+      compare_session_id:
+        type: STRING
+        description: Session ID of a prior baseline snapshot to compare against.
+      session_id:
+        type: STRING
+        description: Override the auto-generated session ID for the snapshot/drift artifact.
+      reasoning:
+        type: STRING
+        description: Why OS-layer firewall state is being checked in this investigation.
+      hypothesis_id:
+        type: STRING
+        description: Hypothesis this check is intended to confirm or refute.
+    required: [provider, reasoning]
+
+Response shape (baseline mode — is_baseline=true):
+  status:      "success" | "error"
+  mode:        "baseline"
+  session_id:  str   (use this as compare_session_id in a future call)
+  artifact:    path to *_snapshot.json
+
+Response shape (compare mode — compare_session_id provided):
+  status:               "success" | "error"
+  mode:                 "compare"
+  drift_detected:       boolean   (true if any family has changes)
+  has_critical_changes: boolean   (true if DROP/REJECT added or default policy changed)
+  ipv4:                 {drift_detected, has_critical_changes, summary,
+                          rules_added: [{table, chain, target, protocol, dst_port, src_port,
+                                         source, raw_rule}],
+                          rules_removed: [...same...],
+                          policy_changes: [...], chains_added: [...], chains_removed: [...]} | null
+  ipv6:                 (same shape as ipv4) | null
+  artifact:             path to *_drift.json
+```
+
+---
+
+### Tool 8: `complete_investigation`
 
 **Maps to:** Loop exit trigger → RCA generation (not delegated to shell or orchestrator)
 **When:** Brain signals investigation is complete (all hypotheses confirmed/refuted/unverifiable).

@@ -19,7 +19,7 @@ Ghost Agent is a conversational CLI that acts as a senior network forensics inve
 
 ## Dependencies
 
-Ghost Agent requires three sibling modules, plus Pipe Meter for performance measurement scenarios (use cases G–L). **Clone the full repo** — do not download this directory alone.
+Ghost Agent requires four sibling modules. **Clone the full repo** — do not download this directory alone.
 
 ```
 agentic-network-tools/
@@ -27,6 +27,7 @@ agentic-network-tools/
 ├── agentic-pcap-forensic-engine/    ← required: PCAP forensic analysis
 ├── agentic-cloud-orchestrator/      ← required: Azure packet capture orchestration
 ├── agentic-pipe-meter/              ← required: VM-to-VM performance measurement (use cases G–L)
+├── netfilter-inspector/             ← required: OS-layer firewall inspection (use cases J–K)
 └── network-ghost-agent/             ← you are here
 ```
 
@@ -58,14 +59,20 @@ export GEMINI_API_KEY="your-gemini-api-key"
 
 ## Run
 
-### NSG / routing investigation (no captures)
+### Full-feature run (recommended — Pipe Meter + Netfilter Inspector enabled)
+```bash
+# Fill in demo/config.env once, then:
+python ghost_agent.py --config demo/config.env
+```
+
+### NSG / routing investigation (no captures, no config file)
 ```bash
 uv run --python 3.12 python ghost_agent.py \
   --resource-group  <your-resource-group> \
   --location        <azure-region>
 ```
 
-### With packet capture support
+### With packet capture support (no config file)
 ```bash
 uv run --python 3.12 python ghost_agent.py \
   --resource-group    <your-resource-group> \
@@ -73,6 +80,8 @@ uv run --python 3.12 python ghost_agent.py \
   --storage-account   <storage-account-name> \
   --storage-container <container-name>
 ```
+
+> **Note:** `run_pipe_meter` (use cases G–L) and `detect_config_drift` (use cases J–K) require a `--config` file. Individual flags are sufficient for use cases A–F only.
 
 ### Resume an interrupted session
 ```bash

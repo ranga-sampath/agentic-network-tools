@@ -27,7 +27,7 @@ uv run --python 3.12 python ghost_agent.py \
   --storage-account   nwlogs080613 \
   --storage-container pktcaptures
 
-#    Use Cases G-I — unified config (Pipe Meter integration):
+#    Use Cases G-L — unified config (Pipe Meter + Netfilter Inspector):
 #    GEMINI_API_KEY can also live in config.env; the --config flag loads it automatically.
 python ghost_agent.py --config demo/config.env
 ```
@@ -399,13 +399,144 @@ Paste the prompt from `demo/use_case_i/PROMPT.txt`.
 
 ---
 
+## Use Case J — "The Shadow Firewall"
+**OS-level iptables DROP — NSG says port is open, traffic is refused | ~20 minutes**
+
+### What this shows
+- An iptables DROP rule on the dest VM's OS layer — completely invisible to Azure NSG audit
+- Pipe Meter detects CONNECTIVITY_DROP on port 5001 while the NSG shows it as allowed
+- Packet capture on dest VM delivers the forensic cross-layer evidence: SYNs arrive, no SYN-ACK — proving OS-level drop
+- `az vm run-command` crosses the Azure→OS boundary to confirm the iptables rule
+- Secondary finding: tc netem delay on source VM — a separate, lower-priority fault uncovered after connectivity is restored
+- If a firewall baseline was taken before the change window, `detect_config_drift` surfaces the iptables DROP in seconds — without a packet capture
+
+### Before the session
+```bash
+# Optional but powerful: take a firewall baseline BEFORE injecting faults
+# This lets Ghost Agent use detect_config_drift to find the iptables change instantly
+python ghost_agent.py --config demo/config.env
+# Ask it: "Take a firewall baseline on tf-dest-vm using provider azure"
+
+# Then inject the faults
+chmod +x demo/use_case_j/setup.sh demo/use_case_j/teardown.sh
+./demo/use_case_j/setup.sh
+# Allow 30 seconds for iptables to take effect on dest VM
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_j/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Turn 1 (hypothesis formation):** "Notice: it's hypothesising OS-level firewall block from the start — because the symptom is 'NSG says port is open, but traffic is refused.' That's a cross-layer mismatch."
+- **NSG query (HITL gate):** "NSG audit: port 5001 ALLOWED. If your mental model stops at the Azure layer, the investigation is over. The agent knows it isn't."
+- **run_pipe_meter → CONNECTIVITY_DROP:** "Pipe Meter confirms it. Port 5001 is fully dropping connections — not degraded, blocked. Now the agent needs to find where."
+- **capture_traffic on DEST VM:** "This is the forensic move. Not capturing on source — capturing on dest. Because if packets aren't even reaching the destination NIC, it's Azure routing. If they're arriving but going unanswered, it's OS-layer."
+- **PCAP result:** "SYNs arrive at the dest VM NIC. No SYN-ACK. That's not an NSG block — NSG would have dropped them before the NIC. This is OS-layer drop. The PCAP is the evidence that crosses the Azure→OS boundary."
+- **az vm run-command iptables:** "`iptables -L INPUT` via run-command. There it is: `DROP tcp dpt:5001`. One rule. The platform team applied OS hardening and left this behind."
+- **Second finding (tc netem on source):** "It keeps going. `tc qdisc show` on source VM reveals a netem 30ms delay — a second OS-level fault that would have caused latency complaints once connectivity was restored. Two findings, neither visible to Azure."
+- **If detect_config_drift demo taken (bonus):** "Compare this to the baseline path. The firewall inspector calls iptables remotely via run-command and diffs the ruleset. The DROP rule appears as `rules_added`. Five seconds. No PCAP needed. That's what a pre-change-window baseline buys you."
+- **Money moment:** "The Azure portal says port 5001 is open. The NSG says port 5001 is open. The application team swears the service is running. And yet — a single iptables rule in the OS kernel that Azure has no visibility into is refusing every connection. Ghost Agent crossed the Azure→OS boundary using PCAP as the proof of crossing."
+
+### After the demo
+```bash
+./demo/use_case_j/teardown.sh
+```
+
+---
+
+## Use Case K — "The Bandwidth Thief"
+**tc tbf rate throttle + iptables ICMP drop — two independent OS-level faults | ~20 minutes**
+
+### What this shows
+- Two symptoms, two root causes — the agent must correctly keep them separate and not conflate them
+- Fault 1: tc tbf throttle on source VM caps all data traffic at 5 Mbps (Azure VNet baseline: 2+ Gbps)
+- Fault 2: iptables DROP for ICMP on dest VM — ping fails, completely unrelated to TCP throughput
+- Pipe Meter returns `is_stable=True` but with anomalously low absolute throughput — requires absolute-value reasoning, not just anomaly-type detection
+- Neither fault visible to Azure NSG audit or route table queries
+- `detect_config_drift` on dest VM surfaces the ICMP DROP rule directly
+
+### Before the session
+```bash
+# Optional: take a firewall baseline on DEST VM before injecting faults
+# Ghost Agent can then use detect_config_drift to find the ICMP DROP rule
+
+chmod +x demo/use_case_k/setup.sh demo/use_case_k/teardown.sh
+./demo/use_case_k/setup.sh
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_k/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Hypothesis formation:** "Two symptoms in the prompt: slow large transfers AND failing ping. Notice the hypotheses cover both — but the agent is already tracking them as potentially independent symptoms."
+- **NSG query:** "NSG: clean. ICMP is not blocked at the Azure layer. Neither is the data path."
+- **run_pipe_meter(test_type="throughput"):** "Measuring actual throughput between the VMs."
+- **Results — the interesting moment:** "`is_stable=True`. No HIGH_VARIANCE. A naive threshold check says 'stable performance' and moves on. But look at the absolute number: 5 Mbps. Azure accelerated networking VMs do 2–25 Gbps. 5 Mbps is not stable — it's throttled. The agent must reason from domain knowledge, not just anomaly labels."
+- **tc qdisc show on SOURCE VM:** "`tc qdisc show dev eth0`. prio+tbf filter. `tbf rate 5Mbit`. SSH is exempt — that's why the investigation tools still work. Everything else: 5 Mbps ceiling."
+- **ICMP investigation (separate thread):** "Ping is failing — but that's ICMP, nothing to do with TCP throughput. The agent investigates it independently."
+- **detect_config_drift or run-command on DEST VM:** "ICMP block is OS-layer. `iptables -L INPUT` on dest VM: `DROP icmp`. The platform team dropped all ping for security — unrelated to the bandwidth issue."
+- **Two-finding RCA:** "Root cause 1: tc tbf on source VM — data path throttled. Root cause 2: iptables ICMP DROP on dest VM — ping blocked. Fix 1: `tc qdisc del dev eth0 root` on source. Fix 2: `iptables -D INPUT -p icmp -j DROP` on dest. Different VMs, different tools, different engineers, separate tickets."
+- **Money moment:** "Two symptoms. One agent. Two root causes — correctly separated, correctly attributed. Conflating them would have sent the investigation in circles. The slow transfers are not caused by the failing ping, and fixing the ping would not have unblocked data transfers."
+
+### After the demo
+```bash
+./demo/use_case_k/teardown.sh
+```
+
+---
+
+## Use Case L — "The Double Lock"
+**NSG deny + tc netem on the same dest VM — two faults, two remediations | ~15 minutes**
+
+### What this shows
+- Two faults on the SAME VM at different layers: NSG deny (Azure control plane) + tc netem delay+loss (OS data plane)
+- The NSG deny is found first and confirmed — the investigation must continue rather than stop
+- The tc netem rule is on the DEST VM (not source, as in Use Cases G/H/I) — tests whether the agent checks both VMs
+- Final report: two independent root causes, two ordered remediations; removing only the NSG rule would leave the latency fault hidden
+
+### Before the session
+```bash
+chmod +x demo/use_case_l/setup.sh demo/use_case_l/teardown.sh
+./demo/use_case_l/setup.sh
+# Allow 30 seconds for NSG rule propagation
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_l/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Hypothesis formation:** "The prompt explicitly says 'there may be more than one issue.' Notice the hypotheses include both control-plane and OS-layer faults. The agent takes the warning seriously."
+- **run_pipe_meter → CONNECTIVITY_DROP:** "iperf port 5001 is completely blocked. Not slow — blocked."
+- **NSG audit → Deny rule found:** "`ghost-demo-l-block-iperf`, priority 200, Deny TCP 5001 inbound. Fault 1 confirmed. A less thorough investigation stops here."
+- **Investigation continues:** "The prompt said 'complete picture.' The agent knows a connectivity block can mask additional faults — you can't measure degradation when the connection won't establish at all."
+- **tc qdisc show on DEST VM (not source):** "Previous demos (G, H, I) all had tc rules on the source VM. Here it's on the destination. Watch which VM the agent checks. If it only checks source, it'll miss this."
+- **netem found on DEST:** "`netem delay 80ms loss 8%` on dest VM's NIC. Hidden behind the NSG block. If you removed the NSG rule and called it fixed, you'd still have 80ms base latency and 8% loss — and an angry on-call engineer at 2am."
+- **Ordered remediation:** "The report sequences the fixes: (1) Remove NSG deny rule `ghost-demo-l-block-iperf` — restores connectivity. (2) Verify iperf reaches baseline — confirm the NSG fix is sufficient at the control plane. (3) Remove tc netem rule on dest VM — restores performance. That ordering matters: you can't verify performance until connectivity is established."
+- **Money moment:** "The change window applied two changes to the same VM — at different layers. An investigation that stops at the first finding would have closed the ticket half-fixed. The post-incident review would have had two incidents instead of one."
+
+### After the demo
+```bash
+./demo/use_case_l/teardown.sh
+```
+
+---
+
 ## Likely Questions and Answers
 
 **"What model is it using?"**
 Gemini 2.0-flash by default. Can be switched to Gemini 2.5-pro for deeper reasoning on complex cases: `ghost_agent.py --model gemini-2.5-pro`.
 
 **"What if the agent tries to run something dangerous?"**
-It can't. The import boundary is enforced at the code level — `ghost_agent.py` never imports `subprocess`. All execution goes through `SafeExecShell`, which has a 4-tier classification pipeline. Tier 0 commands (rm -rf /, mkfs, fork bombs, shutdown) are unconditionally blocked — no human override possible.
+It can't reach interactive or infrastructure-modifying commands without going through the safety gate. All Brain-dispatched shell commands — `az` CLI calls, `ping`, `ss`, `curl` — flow through `SafeExecShell`, which has a 4-tier classification pipeline. Tier 0 commands (rm -rf /, mkfs, fork bombs, shutdown) are unconditionally blocked — no human override possible. RISKY commands (Azure writes, NSG rule changes) require explicit approval at the terminal before executing. The two tool handlers that call subprocess directly (`run_pipe_meter`, `detect_config_drift`) are explicitly scoped to known-safe, read-only operations and bypass SafeExecShell by design — they cannot modify firewall rules, network configuration, or infrastructure state.
 
 **"Can it investigate across VNet peerings or through a firewall/NVA?"**
 The Azure API commands work anywhere in the subscription. For cross-VNet forensics, point it at the peering VM's resource group. Packet captures work at the VM NIC level, so they capture pre/post NVA traffic if you choose the right VM.
