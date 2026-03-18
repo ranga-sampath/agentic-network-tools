@@ -1,0 +1,128 @@
+{
+  "diff_at": "2026-03-16T16:47:06Z",
+  "family": "ipv4",
+  "baseline_parsed_at": "2026-03-16T16:47:06Z",
+  "current_parsed_at": "2026-03-16T16:47:06Z",
+  "baseline_parse_warnings": [],
+  "current_parse_warnings": [],
+  "drift_detected": true,
+  "has_critical_changes": true,
+  "summary": {
+    "tables_added": 3,
+    "tables_removed": 1,
+    "chains_added": 12,
+    "chains_removed": 3,
+    "policy_changes": 0,
+    "rules_added": 0,
+    "rules_removed": 0,
+    "rules_repositioned": 0
+  },
+  "changes": {
+    "tables_added": [
+      "filter",
+      "mangle",
+      "nat"
+    ],
+    "tables_removed": [
+      "security"
+    ],
+    "chains_added": [
+      {
+        "table": "filter",
+        "chain": "FORWARD",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "filter",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 7
+      },
+      {
+        "table": "filter",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "mangle",
+        "chain": "FORWARD",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "mangle",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "mangle",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "mangle",
+        "chain": "POSTROUTING",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "mangle",
+        "chain": "PREROUTING",
+        "type": "builtin",
+        "rule_count": 2
+      },
+      {
+        "table": "nat",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "nat",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "nat",
+        "chain": "POSTROUTING",
+        "type": "builtin",
+        "rule_count": 1
+      },
+      {
+        "table": "nat",
+        "chain": "PREROUTING",
+        "type": "builtin",
+        "rule_count": 0
+      }
+    ],
+    "chains_removed": [
+      {
+        "table": "security",
+        "chain": "FORWARD",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "security",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "security",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 3
+      }
+    ],
+    "policy_changes": [],
+    "rules_added": [],
+    "rules_removed": [],
+    "rules_repositioned": []
+  }
+}

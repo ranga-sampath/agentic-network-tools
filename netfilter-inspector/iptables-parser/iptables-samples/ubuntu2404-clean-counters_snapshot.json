@@ -1,0 +1,144 @@
+{
+  "parsed_at": "2026-03-16T12:24:13Z",
+  "family": "ipv4",
+  "input_format": "iptables-save-counters",
+  "tables": {
+    "security": {
+      "chains": {
+        "INPUT": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "FORWARD": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "OUTPUT": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 5055,
+          "policy_byte_count": 385392,
+          "rules": [
+            {
+              "table": "security",
+              "chain": "OUTPUT",
+              "position": 1,
+              "protocol": "tcp",
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": "168.63.129.16/32",
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": "53",
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "ACCEPT",
+              "target_params": null,
+              "target_stops_chain_traversal": true,
+              "match_extensions": {},
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A OUTPUT -d 168.63.129.16/32 -p tcp -m tcp --dport 53 -j ACCEPT",
+              "packet_count": 0,
+              "byte_count": 0
+            },
+            {
+              "table": "security",
+              "chain": "OUTPUT",
+              "position": 2,
+              "protocol": "tcp",
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": "168.63.129.16/32",
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "ACCEPT",
+              "target_params": null,
+              "target_stops_chain_traversal": true,
+              "match_extensions": {
+                "owner": {
+                  "uid_owner": "0"
+                }
+              },
+              "opaque_extensions": null,
+              "raw_rule": "[2538:2997752] -A OUTPUT -d 168.63.129.16/32 -p tcp -m owner --uid-owner 0 -j ACCEPT",
+              "packet_count": 2538,
+              "byte_count": 2997752
+            },
+            {
+              "table": "security",
+              "chain": "OUTPUT",
+              "position": 3,
+              "protocol": "tcp",
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": "168.63.129.16/32",
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DROP",
+              "target_params": null,
+              "target_stops_chain_traversal": true,
+              "match_extensions": {
+                "conntrack": {
+                  "ctstates": [
+                    "INVALID",
+                    "NEW"
+                  ],
+                  "negated": false
+                }
+              },
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A OUTPUT -d 168.63.129.16/32 -p tcp -m conntrack --ctstate INVALID,NEW -j DROP",
+              "packet_count": 0,
+              "byte_count": 0
+            }
+          ]
+        }
+      }
+    }
+  },
+  "diagnostics": {
+    "drop_policy_chains": [],
+    "accept_policy_chains": [
+      "security/INPUT",
+      "security/FORWARD",
+      "security/OUTPUT"
+    ],
+    "conntrack_position_warnings": [],
+    "active_drop_rules": [],
+    "nat_summary": {
+      "masquerade_rules": [],
+      "dnat_rules": [],
+      "snat_rules": []
+    },
+    "user_defined_chains": {},
+    "unresolved_chain_references": []
+  },
+  "parse_warnings": []
+}

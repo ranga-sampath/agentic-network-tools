@@ -576,3 +576,104 @@ Define what "correct" parsing means before writing the first test. The recommend
 ### P-6: Test VM access for fixture collection
 
 Linux VMs running the required distributions, with root privileges to install Docker, Kubernetes, fail2ban, and WireGuard, and to run `iptables-save --counters`. These are needed only for the one-time fixture collection exercise — the parser module itself requires no VM access for development or testing once the fixtures are collected.
+
+---
+
+## 13. Explain Feature — `--explain` and `--explain-diff`
+
+*Added: 2026-03-16*
+
+### 13.1 Overview
+
+The explain feature adds two optional flags to `iptables_parser.py` that pass parsed output to an LLM (Claude API) and generate a human-readable explanation of the firewall state or firewall change. It requires no changes to the core parser or diff engine. It is implemented in a separate module (`iptables_explain.py`) that `iptables_parser.py` imports on demand — only when `--explain` or `--explain-diff` is passed.
+
+**Pattern precedent:** The Agentic PCAP Forensic Engine in this repository already follows the same pattern — semantic JSON in, expert system prompt, LLM-generated interpretation. The iptables case is simpler: rule evaluation semantics are deterministic and fully enumerable. The system prompt encodes all relevant iptables knowledge so the LLM reasons over a constrained, well-defined domain.
+
+### 13.2 Use cases
+
+**UC-E1 — Standalone firewall state explanation**
+A network engineer has an `iptables-save` output file from any Linux host (any cloud, any environment, any age). They run `python3 iptables_parser.py fw.txt --explain` and receive a human-readable explanation of what the firewall is doing — traffic allowed, traffic blocked, default policies, notable rules — without needing to read and interpret the iptables rule syntax themselves.
+
+**UC-E2 — Firewall change explanation**
+An engineer has two `iptables-save` output files: a before-change capture and an after-change capture. They run `python3 iptables_parser.py before.txt --explain-diff after.txt` and receive an explanation of what changed and what it means for security posture: whether the change tightened or loosened the firewall, which traffic classes are affected, whether any change looks like a regression.
+
+**UC-E3 — Incident review without a live VM**
+An engineer is reviewing an incident post-mortem or audit record. They have an iptables capture saved to disk. No live VM, no Azure connectivity, no SSH required. The explain feature works on any file from any source.
+
+### 13.3 Functional requirements
+
+| ID | Requirement |
+|----|-------------|
+| E-1 | `--explain` flag on `iptables_parser.py`. Optional. Does not affect the core parse pipeline. |
+| E-2 | `--explain-diff FILE2` flag. Takes the positional `file` as baseline and `FILE2` as current. Parses both, diffs them, generates an explanation of changes. |
+| E-3 | `--output PATH` flag. Redirects explanation output to `PATH` instead of stdout. Only valid with `--explain` or `--explain-diff`. |
+| E-4 | In `--explain` mode: write snapshot JSON to `{input_stem}_snapshot.json` in the same directory as the input file. Print path to stderr. |
+| E-5 | In `--explain-diff` mode: write baseline snapshot JSON, current snapshot JSON, and diff JSON to disk. Print all three paths to stderr. The diff JSON filename is `{baseline_stem}_vs_{current_stem}_diff.json`. |
+| E-6 | In both explain modes: JSON output to stdout is suppressed. Only the explanation goes to stdout (or `--output` file). |
+| E-7 | Model selection: default `gemini-2.0-flash`. Override via `IPTABLES_EXPLAIN_MODEL` environment variable. |
+| E-8 | API key: read from `GEMINI_API_KEY` environment variable. Never stored in any config file. If absent, raise a clear error before attempting any API call. |
+| E-9 | Zero-tables guard: if `tables` is an empty dict, the LLM explanation must open with a prominent warning identifying that zero iptables tables were captured and explaining the likely cause (iptables-nft backend storing rules in native nftables). |
+| E-10 | Every explanation output file and stdout output must carry the AI-generated caveat and scope boundary disclaimer in the header, preserved even if the output is copy-pasted. |
+| E-11 | `--explain` and `--explain-diff` require a file argument. Stdin input is not supported in explain mode. |
+| E-12 | `iptables_explain.py` is importable independently of `iptables_parser.py`. It has no circular imports. |
+
+### 13.4 Non-functional requirements
+
+| ID | Requirement |
+|----|-------------|
+| NF-E1 | The `google-genai` package is the only new external dependency. The core `iptables_parser.py` and `iptables_diff.py` remain zero-dependency. The import of `iptables_explain` is deferred to runtime (inside the CLI path only). |
+| NF-E2 | All unit tests for `iptables_explain.py` mock the Gemini client. No real API calls are made during `pytest`. |
+| NF-E3 | The explain feature does not modify the parse_warnings list or the parsed JSON output in any way. |
+
+### 13.5 System prompt requirements
+
+The quality of the system prompt is the primary determinant of output quality. The system prompt for `--explain` (state mode) must encode:
+
+| Concept | Required because |
+|---------|-----------------|
+| Table evaluation order (raw → mangle → nat → filter) | LLM must know which table applies to which traffic direction |
+| First-match semantics | The most common source of incorrect iptables interpretation |
+| Chain jump and RETURN propagation | RETURN does not mean accept; user-defined chains do not have default policies |
+| Default policy fires only when chain is exhausted | Commonly misread as a catch-all rule at the end of the chain |
+| ESTABLISHED/RELATED permits return traffic | Without this, stateful firewall patterns are misread as permitting only new connections |
+| LOG is non-terminal | LOG rules are often misread as blocking |
+| Counter semantics (null vs 0 vs N) | null means no counters captured, not zero hits |
+| INPUT/OUTPUT/FORWARD chain responsibilities | Engineers unfamiliar with iptables may conflate these |
+| Scope limitations (Azure NSG, nftables, routing) | The most important honesty requirement — what the JSON cannot see |
+| Zero-tables guard | On iptables-nft hosts, an empty ruleset is the expected iptables output; it does not mean no firewall |
+
+The system prompt for `--explain-diff` (diff mode) must additionally encode:
+
+| Concept | Required because |
+|---------|-----------------|
+| `has_critical_changes: false` does not mean safe | The diff engine does not flag repositioned DROP/REJECT rules |
+| Position change significance | A DROP moving to position 1 is a security change even without content change |
+| Security posture framing (tightening/loosening/regression) | Engineers want to know the direction of change, not just a list of diffs |
+| `drift_detected: false` → brief output only | No changes = no detailed analysis needed |
+
+### 13.6 Output format
+
+**State explanation (`--explain`) output sections:**
+1. Header with AI-generated caveat and scope boundary (always present)
+2. Executive Summary — 2-4 sentences on overall posture
+3. Traffic Table — direction, protocol, port/type, source, action, notes
+4. Notable Rules — unusual, security-relevant, or operator-attention rules
+5. Counters — only if packet_count data is present (omitted for standard iptables-save captures)
+6. Warnings — shadowed rules, conntrack position issues, ambiguous chain traversal
+7. Scope Limitations — explicit list of what is not visible from this JSON
+
+**Diff explanation (`--explain-diff`) output sections:**
+1. Header with AI-generated caveat and scope boundary (always present)
+2. Change Summary — overall direction and counts
+3. Security Impact — subsections for Policy Changes, Rules Added, Rules Removed, Rules Repositioned, Chains Added/Removed
+4. Overall Assessment — net tightening/loosening, concerns, regressions
+5. Scope Limitations
+
+### 13.7 Known limitations (documented, not to be fixed in this version)
+
+| Limitation | Impact |
+|-----------|--------|
+| Context-free analysis | The LLM sees rules, not their operational effect. An NSG blocking a port above the OS layer is invisible. A rule permitting port 443 may be irrelevant if the NSG denies it upstream. This is structural and cannot be fixed by prompt engineering. |
+| Confident-looking output | A traffic table with explicit ALLOW/DROP rows looks authoritative. The scope disclaimer must be preserved in the output header so it survives copy-paste into incident records. |
+| nftables gap | On hosts using `iptables-nft`, an empty iptables ruleset is the expected output. The zero-tables guard addresses this with a warning, but engineers who are unaware of the nftables relationship may still be misled. This is mitigated but not eliminated. |
+| Repositioned DROP/REJECT rules not flagged as critical | The diff engine's `has_critical_changes` field does not flag position changes. The system prompt instructs the LLM to inspect `rules_repositioned` for DROP/REJECT targets, but this requires the LLM to trace chain order — an analytical step subject to error. |

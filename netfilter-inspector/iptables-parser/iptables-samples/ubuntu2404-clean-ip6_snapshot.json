@@ -1,0 +1,20 @@
+{
+  "parsed_at": "2026-03-16T12:29:21Z",
+  "family": "ipv4",
+  "input_format": "iptables-save",
+  "tables": {},
+  "diagnostics": {
+    "drop_policy_chains": [],
+    "accept_policy_chains": [],
+    "conntrack_position_warnings": [],
+    "active_drop_rules": [],
+    "nat_summary": {
+      "masquerade_rules": [],
+      "dnat_rules": [],
+      "snat_rules": []
+    },
+    "user_defined_chains": {},
+    "unresolved_chain_references": []
+  },
+  "parse_warnings": []
+}

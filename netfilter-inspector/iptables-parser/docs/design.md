@@ -434,7 +434,148 @@ Exit codes:
 
 ---
 
-## 9. Intentional Omissions
+## 9. `iptables_explain.py` — Explain Engine
+
+### Component and function inventory
+
+| Function | Signature | Responsibility |
+|----------|-----------|----------------|
+| `explain_snapshot` | `(snapshot: dict, model: str \| None) → str` | Call Claude API with state system prompt; return markdown explanation of the firewall ruleset. |
+| `explain_diff` | `(diff: dict, model: str \| None) → str` | Call Claude API with diff system prompt; return markdown explanation of what changed between two rulesets. |
+| `_build_state_system_prompt` | `() → str` | Return the iptables expert system prompt for state explanation. Encodes: table eval order, first-match semantics, chain traversal mechanics, ESTABLISHED/RELATED patterns, counter semantics, scope limitations, zero-tables guard, output format directive, analytical guidance. |
+| `_build_diff_system_prompt` | `() → str` | Return the system prompt for diff explanation. Encodes: change category semantics, position-change significance, security posture framing, `has_critical_changes` limitations, scope limitations, output format directive. |
+| `_get_client` | `() → genai.Client` | Construct and return a Gemini client. Raises `ImportError` if `google-genai` not installed; raises `EnvironmentError` if `GEMINI_API_KEY` not set. |
+| `_get_model` | `() → str` | Return model name from `IPTABLES_EXPLAIN_MODEL` env var, defaulting to `gemini-2.0-flash`. |
+| `_write_output` | `(text: str, output_path: str \| None) → None` | Write explanation to file (printing path to stderr) or to stdout. |
+| `main` | `() → None` | CLI entry point. Three modes: snapshot JSON file, `--diff-json` file, `--diff` two text files. |
+
+### Data flow
+
+**State explanation mode:**
+```
+iptables-save text
+    → parse_iptables_save()  [in iptables_parser.py]
+    → snapshot dict
+    → json.dumps(snapshot)   [as user message]
+    → Claude API (system: _build_state_system_prompt())
+    → markdown explanation string
+    → stdout or --output file
+```
+Side effect: snapshot dict written to `{input_stem}_snapshot.json`.
+
+**Diff explanation mode:**
+```
+before.txt + after.txt
+    → parse_iptables_save() × 2
+    → baseline dict + current dict
+    → diff_rulesets()        [in iptables_diff.py]
+    → diff dict
+    → json.dumps(diff)       [as user message]
+    → Claude API (system: _build_diff_system_prompt())
+    → markdown explanation string
+    → stdout or --output file
+```
+Side effects: two snapshot JSONs + diff JSON written to disk.
+
+### Configuration model
+
+| Variable | Required | Default | Source |
+|----------|----------|---------|--------|
+| `GEMINI_API_KEY` | Yes (for explain modes) | — | Environment variable only. Never in any config file. |
+| `IPTABLES_EXPLAIN_MODEL` | No | `gemini-2.0-flash` | Environment variable. |
+
+### CLI contracts
+
+#### `iptables_explain.py` standalone CLI
+
+```
+Usage:
+  python3 iptables_explain.py SNAPSHOT_JSON
+  python3 iptables_explain.py --diff-json DIFF_JSON
+  python3 iptables_explain.py --diff BEFORE.txt AFTER.txt [--family ipv4|ipv6]
+  python3 iptables_explain.py ... [--output PATH] [--indent N]
+
+Exit codes:
+  0   Success
+  1   File not found, API error, or missing API key
+  2   Argument error (argparse)
+```
+
+#### `iptables_parser.py` with explain flags
+
+```
+Usage:
+  python3 iptables_parser.py FILE --explain [--output PATH]
+  python3 iptables_parser.py FILE --explain-diff FILE2 [--output PATH]
+
+  --explain         After parsing FILE, write snapshot JSON to {FILE_stem}_snapshot.json
+                    (path printed to stderr), then call Claude API and output explanation
+                    to stdout (or --output). JSON is NOT printed to stdout in this mode.
+
+  --explain-diff FILE2
+                    Parse FILE (baseline) and FILE2 (current). Write both snapshot JSONs
+                    and the diff JSON ({baseline_stem}_vs_{current_stem}_diff.json) to
+                    disk (paths printed to stderr). Call Claude API and output diff
+                    explanation to stdout (or --output). JSON is NOT printed to stdout.
+
+  --output PATH     Write explanation to PATH instead of stdout. Only valid with
+                    --explain or --explain-diff.
+
+Exit codes:
+  0   Success
+  1   File not found, API error, or missing API key (from iptables_explain)
+  2   Argument error (argparse)
+```
+
+**Backward compatibility:** All existing `iptables_parser.py` CLI invocations without `--explain` or `--explain-diff` are unchanged. Normal mode (JSON to stdout) is unaffected.
+
+### System prompt design rationale
+
+The system prompt is the primary quality lever for the explain feature. A generic LLM asked to explain iptables rules makes category errors: it conflates table traversal order, misreads RETURN targets, and misinterprets the default policy semantics. The system prompt eliminates these errors by encoding the evaluation model explicitly.
+
+**Key encoding decisions:**
+
+| Concept | Why explicitly encoded |
+|---------|----------------------|
+| First-match semantics | The most common iptables misinterpretation; a DROP at position 5 is meaningless if an ACCEPT at position 1 covers the same traffic |
+| RETURN does not mean accept | Engineers unfamiliar with iptables frequently misread RETURN as an acceptance verdict |
+| Default policy is not a catch-all rule | Misread as an implicit rule at the end of the chain; it fires only when the chain is exhausted |
+| ESTABLISHED/RELATED permits return traffic | Without this knowledge, stateful firewall patterns (the most common pattern) are misread |
+| LOG is non-terminal | LOG rules pass the packet to the next rule; they are not blocking rules |
+| Zero-tables guard | On iptables-nft hosts, `iptables-save` returns empty output even when nftables is enforcing traffic |
+| Scope limitations (Azure NSG, nftables, routing) | The most important honesty constraint — the LLM must not assert operational facts it cannot derive from the JSON |
+
+**Analytical guidance directives** (in both prompts):
+- Frame findings as observations ("the rules permit") not authoritative verdicts ("traffic is allowed")
+- Trace chain traversal explicitly for user-defined chains — do not assume the outcome
+- Flag complexity or ambiguity explicitly rather than guessing
+- For the diff prompt: address change categories in priority order (policy > DROP/REJECT > ACCEPT > reposition > infrastructure)
+
+### Dependency model
+
+`iptables_explain.py` imports:
+- `google.genai` (external, required for explain modes, imported lazily inside `_get_client`)
+- `iptables_parser.parse_iptables_save` (sibling module, imported inside `main()` for `--diff` text mode only)
+- `iptables_diff.diff_rulesets` (sibling module, imported inside `main()` for `--diff` text mode only)
+
+`iptables_parser.py` imports `iptables_explain` (inside `main()` only, when `--explain` or `--explain-diff` is passed). This is not a circular import because `iptables_explain` imports `iptables_parser` only inside its own `main()`, not at module level.
+
+**Zero-dependency guarantee preserved:** `iptables_parser.py` and `iptables_diff.py` retain zero external dependencies when used as library modules (imported by other code). The `google-genai` dependency is only triggered by the CLI explain path.
+
+### Error handling
+
+| Error | Behavior |
+|-------|----------|
+| `google-genai` not installed | `ImportError` with install instructions |
+| `GEMINI_API_KEY` not set | `EnvironmentError` with clear message before any API call |
+| API call fails | Exception propagates; Python prints traceback to stderr; exit code 1 |
+| Input file not found | `FileNotFoundError` propagates; exit code 1 |
+| `--output` with no `--explain`/`--explain-diff` | `argparse.error()` with explanation; exit code 2 |
+| `--explain` without a file argument | `argparse.error()`; exit code 2 |
+
+---
+
+## 10. Intentional Omissions
 
 | Omission | Rationale |
 |----------|-----------|

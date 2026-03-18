@@ -1,0 +1,431 @@
+{
+  "parsed_at": "2026-03-16T12:29:02Z",
+  "family": "ipv4",
+  "input_format": "iptables-save-counters",
+  "tables": {
+    "filter": {
+      "chains": {
+        "INPUT": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 1,
+          "policy_byte_count": 128,
+          "rules": [
+            {
+              "table": "filter",
+              "chain": "INPUT",
+              "position": 1,
+              "protocol": "ipv6-icmp",
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": null,
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "ACCEPT",
+              "target_params": null,
+              "target_stops_chain_traversal": true,
+              "match_extensions": {
+                "icmp6": {
+                  "icmpv6_type": "128",
+                  "negated": false
+                }
+              },
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A INPUT -p ipv6-icmp -m icmp6 --icmpv6-type 128 -j ACCEPT",
+              "packet_count": 0,
+              "byte_count": 0
+            }
+          ]
+        },
+        "FORWARD": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": [
+            {
+              "table": "filter",
+              "chain": "FORWARD",
+              "position": 1,
+              "protocol": null,
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": null,
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DOCKER-USER",
+              "target_params": null,
+              "target_stops_chain_traversal": "conditional",
+              "match_extensions": {},
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A FORWARD -j DOCKER-USER",
+              "packet_count": 0,
+              "byte_count": 0
+            },
+            {
+              "table": "filter",
+              "chain": "FORWARD",
+              "position": 2,
+              "protocol": null,
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": null,
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DOCKER-FORWARD",
+              "target_params": null,
+              "target_stops_chain_traversal": "conditional",
+              "match_extensions": {},
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A FORWARD -j DOCKER-FORWARD",
+              "packet_count": 0,
+              "byte_count": 0
+            }
+          ]
+        },
+        "OUTPUT": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "DOCKER": {
+          "type": "user-defined",
+          "default_policy": null,
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "DOCKER-BRIDGE": {
+          "type": "user-defined",
+          "default_policy": null,
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "DOCKER-CT": {
+          "type": "user-defined",
+          "default_policy": null,
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "DOCKER-FORWARD": {
+          "type": "user-defined",
+          "default_policy": null,
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": [
+            {
+              "table": "filter",
+              "chain": "DOCKER-FORWARD",
+              "position": 1,
+              "protocol": null,
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": null,
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DOCKER-CT",
+              "target_params": null,
+              "target_stops_chain_traversal": "conditional",
+              "match_extensions": {},
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A DOCKER-FORWARD -j DOCKER-CT",
+              "packet_count": 0,
+              "byte_count": 0
+            },
+            {
+              "table": "filter",
+              "chain": "DOCKER-FORWARD",
+              "position": 2,
+              "protocol": null,
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": null,
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DOCKER-INTERNAL",
+              "target_params": null,
+              "target_stops_chain_traversal": "conditional",
+              "match_extensions": {},
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A DOCKER-FORWARD -j DOCKER-INTERNAL",
+              "packet_count": 0,
+              "byte_count": 0
+            },
+            {
+              "table": "filter",
+              "chain": "DOCKER-FORWARD",
+              "position": 3,
+              "protocol": null,
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": null,
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DOCKER-BRIDGE",
+              "target_params": null,
+              "target_stops_chain_traversal": "conditional",
+              "match_extensions": {},
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A DOCKER-FORWARD -j DOCKER-BRIDGE",
+              "packet_count": 0,
+              "byte_count": 0
+            }
+          ]
+        },
+        "DOCKER-INTERNAL": {
+          "type": "user-defined",
+          "default_policy": null,
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "DOCKER-USER": {
+          "type": "user-defined",
+          "default_policy": null,
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        }
+      }
+    },
+    "nat": {
+      "chains": {
+        "PREROUTING": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": [
+            {
+              "table": "nat",
+              "chain": "PREROUTING",
+              "position": 1,
+              "protocol": null,
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": null,
+              "destination_negated": false,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DOCKER",
+              "target_params": null,
+              "target_stops_chain_traversal": "conditional",
+              "match_extensions": {
+                "addrtype": {
+                  "dst_type": "LOCAL",
+                  "dst_type_negated": false
+                }
+              },
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER",
+              "packet_count": 0,
+              "byte_count": 0
+            }
+          ]
+        },
+        "INPUT": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "OUTPUT": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": [
+            {
+              "table": "nat",
+              "chain": "OUTPUT",
+              "position": 1,
+              "protocol": null,
+              "protocol_negated": false,
+              "source": null,
+              "source_negated": false,
+              "destination": "::1/128",
+              "destination_negated": true,
+              "in_interface": null,
+              "in_interface_negated": false,
+              "out_interface": null,
+              "out_interface_negated": false,
+              "dst_port": null,
+              "dst_port_negated": false,
+              "src_port": null,
+              "src_port_negated": false,
+              "target": "DOCKER",
+              "target_params": null,
+              "target_stops_chain_traversal": "conditional",
+              "match_extensions": {
+                "addrtype": {
+                  "dst_type": "LOCAL",
+                  "dst_type_negated": false
+                }
+              },
+              "opaque_extensions": null,
+              "raw_rule": "[0:0] -A OUTPUT ! -d ::1/128 -m addrtype --dst-type LOCAL -j DOCKER",
+              "packet_count": 0,
+              "byte_count": 0
+            }
+          ]
+        },
+        "POSTROUTING": {
+          "type": "builtin",
+          "default_policy": "ACCEPT",
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        },
+        "DOCKER": {
+          "type": "user-defined",
+          "default_policy": null,
+          "policy_packet_count": 0,
+          "policy_byte_count": 0,
+          "rules": []
+        }
+      }
+    }
+  },
+  "diagnostics": {
+    "drop_policy_chains": [],
+    "accept_policy_chains": [
+      "filter/INPUT",
+      "filter/FORWARD",
+      "filter/OUTPUT",
+      "nat/PREROUTING",
+      "nat/INPUT",
+      "nat/OUTPUT",
+      "nat/POSTROUTING"
+    ],
+    "conntrack_position_warnings": [],
+    "active_drop_rules": [],
+    "nat_summary": {
+      "masquerade_rules": [],
+      "dnat_rules": [],
+      "snat_rules": []
+    },
+    "user_defined_chains": {
+      "DOCKER-USER": {
+        "referenced_from": [
+          {
+            "table": "filter",
+            "chain": "FORWARD",
+            "position": 1
+          }
+        ]
+      },
+      "DOCKER-FORWARD": {
+        "referenced_from": [
+          {
+            "table": "filter",
+            "chain": "FORWARD",
+            "position": 2
+          }
+        ]
+      },
+      "DOCKER-CT": {
+        "referenced_from": [
+          {
+            "table": "filter",
+            "chain": "DOCKER-FORWARD",
+            "position": 1
+          }
+        ]
+      },
+      "DOCKER-INTERNAL": {
+        "referenced_from": [
+          {
+            "table": "filter",
+            "chain": "DOCKER-FORWARD",
+            "position": 2
+          }
+        ]
+      },
+      "DOCKER-BRIDGE": {
+        "referenced_from": [
+          {
+            "table": "filter",
+            "chain": "DOCKER-FORWARD",
+            "position": 3
+          }
+        ]
+      },
+      "DOCKER": {
+        "referenced_from": [
+          {
+            "table": "nat",
+            "chain": "PREROUTING",
+            "position": 1
+          },
+          {
+            "table": "nat",
+            "chain": "OUTPUT",
+            "position": 1
+          }
+        ]
+      }
+    },
+    "unresolved_chain_references": []
+  },
+  "parse_warnings": []
+}

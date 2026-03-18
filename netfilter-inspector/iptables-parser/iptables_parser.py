@@ -3,9 +3,15 @@
 iptables_parser.py — Parse iptables-save output into structured JSON.
 
 Usage:
-    python3 iptables_parser.py [file]      # reads file or stdin
+    python3 iptables_parser.py [file]                       # parse to JSON (stdout)
+    python3 iptables_parser.py [file] --explain             # parse + LLM explanation
+    python3 iptables_parser.py [file] --explain-diff FILE2  # diff two files + LLM explanation
     python3 iptables_parser.py --help
-    python3 iptables_parser.py --indent N  # JSON indentation (default 2)
+    python3 iptables_parser.py --indent N                   # JSON indentation (default 2)
+
+For --explain and --explain-diff:
+    Requires GEMINI_API_KEY environment variable.
+    Optional: IPTABLES_EXPLAIN_MODEL (default: gemini-2.0-flash)
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ import json
 import argparse
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional, List, Dict, Set
 
 # ---------------------------------------------------------------------------
@@ -1185,7 +1192,8 @@ def main():
     parser.add_argument(
         "file",
         nargs="?",
-        help="Path to iptables-save output file. Reads stdin if omitted.",
+        help="Path to iptables-save output file. Reads stdin if omitted. "
+             "Required when using --explain or --explain-diff.",
     )
     parser.add_argument(
         "--indent",
@@ -1200,16 +1208,100 @@ def main():
         default="ipv4",
         help="Address family of the input (default: ipv4)",
     )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Generate an LLM-powered explanation of the parsed firewall state. "
+             "Requires ANTHROPIC_API_KEY. Writes snapshot JSON to "
+             "<input>_snapshot.json; explanation goes to stdout (or --output).",
+    )
+    parser.add_argument(
+        "--explain-diff",
+        metavar="FILE2",
+        dest="explain_diff",
+        help="Compare FILE (baseline) with FILE2 (current) and generate an "
+             "LLM-powered explanation of what changed. Requires ANTHROPIC_API_KEY. "
+             "Writes both snapshot JSONs and the diff JSON to disk; explanation "
+             "goes to stdout (or --output).",
+    )
+    parser.add_argument(
+        "--output",
+        metavar="PATH",
+        help="Write explanation to PATH instead of stdout. "
+             "Only valid with --explain or --explain-diff.",
+    )
     args = parser.parse_args()
 
+    # ---- Validate flag combinations ----
+    if args.output and not (args.explain or args.explain_diff):
+        parser.error("--output is only valid with --explain or --explain-diff")
+
+    if (args.explain or args.explain_diff) and not args.file:
+        parser.error("--explain and --explain-diff require a FILE argument (stdin not supported)")
+
+    # ---- Read primary input ----
     if args.file:
         with open(args.file, "r", encoding="utf-8") as fh:
             text = fh.read()
+        input_path = Path(args.file)
     else:
         text = sys.stdin.read()
+        input_path = None
 
     result = parse_iptables_save(text, family=args.family)
+
+    # ---- explain-diff mode: two files → JSON snapshots + diff JSON + LLM explanation ----
+    if args.explain_diff:
+        from iptables_explain import explain_diff as _explain_diff
+        from iptables_diff import diff_rulesets
+
+        current_path = Path(args.explain_diff)
+        with open(current_path, "r", encoding="utf-8") as fh:
+            text2 = fh.read()
+        result2 = parse_iptables_save(text2, family=args.family)
+
+        snap1_path = input_path.with_name(input_path.stem + "_snapshot.json")
+        snap2_path = current_path.with_name(current_path.stem + "_snapshot.json")
+        diff_path = input_path.with_name(
+            f"{input_path.stem}_vs_{current_path.stem}_diff.json"
+        )
+
+        snap1_path.write_text(json.dumps(result, indent=args.indent), encoding="utf-8")
+        snap2_path.write_text(json.dumps(result2, indent=args.indent), encoding="utf-8")
+
+        diff_result = diff_rulesets(result, result2)
+        diff_path.write_text(json.dumps(diff_result, indent=args.indent), encoding="utf-8")
+
+        print(f"Baseline snapshot: {snap1_path}", file=sys.stderr)
+        print(f"Current snapshot:  {snap2_path}", file=sys.stderr)
+        print(f"Diff JSON:         {diff_path}", file=sys.stderr)
+
+        explanation = _explain_diff(diff_result)
+        _write_explanation(explanation, args.output)
+        return
+
+    # ---- explain mode: single file → JSON snapshot + LLM explanation ----
+    if args.explain:
+        from iptables_explain import explain_snapshot as _explain_snapshot
+
+        snap_path = input_path.with_name(input_path.stem + "_snapshot.json")
+        snap_path.write_text(json.dumps(result, indent=args.indent), encoding="utf-8")
+        print(f"Snapshot JSON: {snap_path}", file=sys.stderr)
+
+        explanation = _explain_snapshot(result)
+        _write_explanation(explanation, args.output)
+        return
+
+    # ---- normal mode: JSON to stdout ----
     print(json.dumps(result, indent=args.indent))
+
+
+def _write_explanation(text: str, output_path: str | None) -> None:
+    if output_path:
+        Path(output_path).write_text(text, encoding="utf-8")
+        print(f"Explanation:   {output_path}", file=sys.stderr)
+    else:
+        print(text)
 
 
 if __name__ == "__main__":

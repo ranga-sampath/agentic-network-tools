@@ -1,0 +1,72 @@
+{
+  "diff_at": "2026-03-16T16:44:28Z",
+  "family": "ipv4",
+  "baseline_parsed_at": "2026-03-16T16:44:28Z",
+  "current_parsed_at": "2026-03-16T16:44:28Z",
+  "baseline_parse_warnings": [],
+  "current_parse_warnings": [],
+  "drift_detected": true,
+  "has_critical_changes": true,
+  "summary": {
+    "tables_added": 1,
+    "tables_removed": 1,
+    "chains_added": 3,
+    "chains_removed": 3,
+    "policy_changes": 0,
+    "rules_added": 0,
+    "rules_removed": 0,
+    "rules_repositioned": 0
+  },
+  "changes": {
+    "tables_added": [
+      "filter"
+    ],
+    "tables_removed": [
+      "security"
+    ],
+    "chains_added": [
+      {
+        "table": "filter",
+        "chain": "FORWARD",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "filter",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 4
+      },
+      {
+        "table": "filter",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 0
+      }
+    ],
+    "chains_removed": [
+      {
+        "table": "security",
+        "chain": "FORWARD",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "security",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "security",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 3
+      }
+    ],
+    "policy_changes": [],
+    "rules_added": [],
+    "rules_removed": [],
+    "rules_repositioned": []
+  }
+}

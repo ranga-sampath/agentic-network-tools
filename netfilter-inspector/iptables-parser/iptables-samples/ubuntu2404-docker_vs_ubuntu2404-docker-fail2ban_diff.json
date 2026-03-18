@@ -1,0 +1,72 @@
+{
+  "diff_at": "2026-03-16T16:44:57Z",
+  "family": "ipv4",
+  "baseline_parsed_at": "2026-03-16T16:44:57Z",
+  "current_parsed_at": "2026-03-16T16:44:57Z",
+  "baseline_parse_warnings": [],
+  "current_parse_warnings": [],
+  "drift_detected": true,
+  "has_critical_changes": true,
+  "summary": {
+    "tables_added": 0,
+    "tables_removed": 0,
+    "chains_added": 1,
+    "chains_removed": 0,
+    "policy_changes": 0,
+    "rules_added": 1,
+    "rules_removed": 0,
+    "rules_repositioned": 0
+  },
+  "changes": {
+    "tables_added": [],
+    "tables_removed": [],
+    "chains_added": [
+      {
+        "table": "filter",
+        "chain": "f2b-sshd",
+        "type": "user-defined",
+        "rule_count": 2
+      }
+    ],
+    "chains_removed": [],
+    "policy_changes": [],
+    "rules_added": [
+      {
+        "table": "filter",
+        "chain": "INPUT",
+        "position": 1,
+        "protocol": "tcp",
+        "protocol_negated": false,
+        "source": null,
+        "source_negated": false,
+        "destination": null,
+        "destination_negated": false,
+        "in_interface": null,
+        "in_interface_negated": false,
+        "out_interface": null,
+        "out_interface_negated": false,
+        "dst_port": null,
+        "dst_port_negated": false,
+        "src_port": null,
+        "src_port_negated": false,
+        "target": "f2b-sshd",
+        "target_params": null,
+        "target_stops_chain_traversal": "conditional",
+        "match_extensions": {
+          "multiport": {
+            "destination_ports": [
+              "22"
+            ],
+            "destination_ports_negated": false
+          }
+        },
+        "opaque_extensions": null,
+        "raw_rule": "-A INPUT -p tcp -m multiport --dports 22 -j f2b-sshd",
+        "packet_count": null,
+        "byte_count": null
+      }
+    ],
+    "rules_removed": [],
+    "rules_repositioned": []
+  }
+}

@@ -1,0 +1,152 @@
+{
+  "diff_at": "2026-03-16T16:44:43Z",
+  "family": "ipv4",
+  "baseline_parsed_at": "2026-03-16T16:44:43Z",
+  "current_parsed_at": "2026-03-16T16:44:43Z",
+  "baseline_parse_warnings": [],
+  "current_parse_warnings": [],
+  "drift_detected": true,
+  "has_critical_changes": true,
+  "summary": {
+    "tables_added": 3,
+    "tables_removed": 1,
+    "chains_added": 16,
+    "chains_removed": 3,
+    "policy_changes": 0,
+    "rules_added": 0,
+    "rules_removed": 0,
+    "rules_repositioned": 0
+  },
+  "changes": {
+    "tables_added": [
+      "filter",
+      "nat",
+      "raw"
+    ],
+    "tables_removed": [
+      "security"
+    ],
+    "chains_added": [
+      {
+        "table": "filter",
+        "chain": "DOCKER",
+        "type": "user-defined",
+        "rule_count": 2
+      },
+      {
+        "table": "filter",
+        "chain": "DOCKER-BRIDGE",
+        "type": "user-defined",
+        "rule_count": 1
+      },
+      {
+        "table": "filter",
+        "chain": "DOCKER-CT",
+        "type": "user-defined",
+        "rule_count": 1
+      },
+      {
+        "table": "filter",
+        "chain": "DOCKER-FORWARD",
+        "type": "user-defined",
+        "rule_count": 4
+      },
+      {
+        "table": "filter",
+        "chain": "DOCKER-INTERNAL",
+        "type": "user-defined",
+        "rule_count": 0
+      },
+      {
+        "table": "filter",
+        "chain": "DOCKER-USER",
+        "type": "user-defined",
+        "rule_count": 0
+      },
+      {
+        "table": "filter",
+        "chain": "FORWARD",
+        "type": "builtin",
+        "rule_count": 2
+      },
+      {
+        "table": "filter",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "filter",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "nat",
+        "chain": "DOCKER",
+        "type": "user-defined",
+        "rule_count": 1
+      },
+      {
+        "table": "nat",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "nat",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 1
+      },
+      {
+        "table": "nat",
+        "chain": "POSTROUTING",
+        "type": "builtin",
+        "rule_count": 1
+      },
+      {
+        "table": "nat",
+        "chain": "PREROUTING",
+        "type": "builtin",
+        "rule_count": 1
+      },
+      {
+        "table": "raw",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "raw",
+        "chain": "PREROUTING",
+        "type": "builtin",
+        "rule_count": 1
+      }
+    ],
+    "chains_removed": [
+      {
+        "table": "security",
+        "chain": "FORWARD",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "security",
+        "chain": "INPUT",
+        "type": "builtin",
+        "rule_count": 0
+      },
+      {
+        "table": "security",
+        "chain": "OUTPUT",
+        "type": "builtin",
+        "rule_count": 3
+      }
+    ],
+    "policy_changes": [],
+    "rules_added": [],
+    "rules_removed": [],
+    "rules_repositioned": []
+  }
+}
