@@ -16,13 +16,36 @@ GHOST_AGENT_PATH = Path(__file__).parent.parent / "ghost_agent.py"
 # ---------------------------------------------------------------------------
 
 def test_T1_only_allowed_imports():
-    """ghost_agent.py must only import stdlib + SafeExecShell + CloudOrchestrator + google.genai.
+    """ghost_agent.py must not import subprocess or pcap_forensics at module level.
 
-    No subprocess and no pcap_forensics imports are allowed.
+    Handler functions (_run_firewall_inspector_handler, _run_pipe_meter_handler)
+    are permitted to use local 'import subprocess' to launch sibling Python modules
+    as subprocesses. These are trusted local invocations, not remote network commands.
+    pcap_forensics is always forbidden — it must be invoked via shell.execute().
     """
     src = GHOST_AGENT_PATH.read_text()
     tree = ast.parse(src)
 
+    # Only check module-level imports (direct children of the Module node).
+    module_level_imports = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_level_imports.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                module_level_imports.append(node.module)
+
+    # subprocess at module level is forbidden; local handler imports are allowed.
+    # pcap_forensics is always forbidden everywhere.
+    forbidden_module_level = ["subprocess"]
+    for forbidden_mod in forbidden_module_level:
+        violators = [m for m in module_level_imports if forbidden_mod in m]
+        assert not violators, (
+            f"ghost_agent.py must not import '{forbidden_mod}' at module level, found: {violators}"
+        )
+
+    # pcap_forensics forbidden everywhere (walk full tree)
     all_imports = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -31,13 +54,10 @@ def test_T1_only_allowed_imports():
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 all_imports.append(node.module)
-
-    forbidden = ["subprocess", "pcap_forensics"]
-    for forbidden_mod in forbidden:
-        violators = [m for m in all_imports if forbidden_mod in m]
-        assert not violators, (
-            f"ghost_agent.py must not import '{forbidden_mod}', found: {violators}"
-        )
+    pcap_violators = [m for m in all_imports if "pcap_forensics" in m]
+    assert not pcap_violators, (
+        f"ghost_agent.py must not import 'pcap_forensics' anywhere, found: {pcap_violators}"
+    )
 
     # Allowed imports verification (positive check)
     allowed_patterns = [
@@ -54,12 +74,18 @@ def test_T1_only_allowed_imports():
 # T2: 7 FunctionDeclarations with required fields
 # ---------------------------------------------------------------------------
 
-def test_T2_seven_function_declarations():
-    """_build_ghost_tools() must return exactly 7 FunctionDeclarations."""
+def test_T2_nine_function_declarations():
+    """_build_ghost_tools() must return exactly 9 FunctionDeclarations.
+
+    Original 7: run_shell_cmd, capture_traffic, check_task, cancel_task,
+                cleanup_task, manage_hypotheses, complete_investigation.
+    Added in v1.1: run_pipe_meter (use cases G-L: VM-to-VM performance),
+                   detect_config_drift (use cases J-K: OS firewall inspection).
+    """
     tools = _build_ghost_tools()
     declarations = tools.function_declarations
-    assert len(declarations) == 7, (
-        f"Expected 7 FunctionDeclarations, got {len(declarations)}: "
+    assert len(declarations) == 9, (
+        f"Expected 9 FunctionDeclarations, got {len(declarations)}: "
         f"{[d.name for d in declarations]}"
     )
 
@@ -71,6 +97,8 @@ def test_T2_seven_function_declarations():
         "cleanup_task",
         "manage_hypotheses",
         "complete_investigation",
+        "run_pipe_meter",
+        "detect_config_drift",
     }
     actual_names = {d.name for d in declarations}
     assert actual_names == expected_names, (

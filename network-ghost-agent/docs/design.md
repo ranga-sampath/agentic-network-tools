@@ -333,13 +333,78 @@ Response shape (compare mode — compare_session_id provided):
   mode:                 "compare"
   drift_detected:       boolean   (true if any family has changes)
   has_critical_changes: boolean   (true if DROP/REJECT added or default policy changed)
+
+  For iptables VMs — keys "ipv4" and/or "ipv6":
   ipv4:                 {drift_detected, has_critical_changes, summary,
                           rules_added: [{table, chain, target, protocol, dst_port, src_port,
                                          source, raw_rule}],
                           rules_removed: [...same...],
                           policy_changes: [...], chains_added: [...], chains_removed: [...]} | null
   ipv6:                 (same shape as ipv4) | null
+
+  For nftables VMs — key "nft":
+  nft:                  {drift_detected, has_critical_changes, summary,
+                          rules_added: [{table, chain, verdict, protocol, dst_port, src_port,
+                                         src_addr, dst_addr, comment}],
+                          rules_removed: [...same...],
+                          policy_changes: [...], chains_added: [...], chains_removed: [...]} | null
+
   artifact:             path to *_drift.json
+
+  Field name asymmetry — iptables vs. nftables (intentional):
+    iptables rule fields: "target" (the -j jump target, e.g. ACCEPT/DROP/REJECT/chain),
+                          "source" (source address, from -s), "raw_rule" (the full iptables-save line)
+    nftables rule fields: "verdict" (nftables terminal expression, e.g. "accept"/"drop"/"reject"),
+                          "src_addr" / "dst_addr" (nftables normalized address fields),
+                          "comment" (top-level nft rule comment)
+    These field names differ because they reflect the distinct data models of iptables-save
+    and nft --json. The Brain must branch on the presence of the "nft" key (nftables) vs.
+    "ipv4"/"ipv6" keys (iptables) to access the correct field names when reasoning about
+    specific rules. Do not assume "target" exists on nftables rules or "verdict" on iptables rules.
+
+  has_critical_changes semantics differ by framework:
+    iptables: set by chain_classifier.py based on chain name patterns (DROP/REJECT rules in
+              user-defined chains, default policy changes)
+    nftables: set by nft_diff_rulesets() based on DROP verdict rules and base-chain policy changes;
+              no chain-pattern annotation is applied. "has_critical_changes=true" on a nftables
+              diff means a DROP/REJECT verdict rule was added or a base chain default policy changed.
+
+  top-level drift_detected and has_critical_changes are computed over all families
+  present in drift_by_family — not hardcoded to ipv4/ipv6. A nftables VM will have only
+  "nft"; drift_detected reflects that family.
+
+  When a family entry is an error dict (e.g. {"error": "Cannot diff nft: ...unavailable."}),
+  that family is excluded from the drift_detected and has_critical_changes computation.
+  drift_detected will be false if the only family entry is an error. Check individual family
+  entries for "error" keys to detect collection failures.
+
+  Known limitation — chains_added vs rules_added in nftables diffs:
+  When an entire new table+chain is added (neither existed in the baseline), the diff engine
+  classifies the event as chains_added, not rules_added. chains_added entries contain only
+  chain metadata — name, hook, type, policy, rule_count — but NOT the individual rule details
+  (verdict, dst_port, protocol, etc.) for rules that were created inside that new chain.
+
+  Example:
+    Baseline: no fw_test table
+    Current:  table inet fw_test { chain input { tcp dport 4444 drop } }
+
+  The Brain receives:
+    chains_added: [{"table": "inet/fw_test", "chain": "input", "rule_count": 1}]
+    rules_added:  []
+
+  The Brain can see that a new chain with 1 rule was added, but cannot name what that rule
+  does — it cannot see verdict=drop or dst_port=4444. has_critical_changes may be false
+  even though a DROP rule was added, because the critical-changes flag is computed only over
+  rules_added entries.
+
+  Contrast with the case where the chain already exists in the baseline and a rule is added
+  to it — that rule appears in rules_added with full fields and has_critical_changes is set
+  correctly.
+
+  Operational implication for the Brain: when chains_added is non-empty and rules_added is
+  empty, acknowledge that the newly-added chain may contain rules whose details are not
+  visible. Recommend the operator compare the full nftables ruleset manually or re-run with
+  the new state as the baseline to obtain rule-level visibility.
 ```
 
 ---

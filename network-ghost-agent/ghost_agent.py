@@ -27,6 +27,8 @@ _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT / "agentic-safety-shell"))
 sys.path.insert(0, str(_ROOT / "agentic-cloud-orchestrator"))
 sys.path.insert(0, str(_ROOT / "agentic-pipe-meter"))
+sys.path.insert(0, str(_ROOT / "netfilter-inspector" / "iptables-parser"))
+sys.path.insert(0, str(_ROOT / "netfilter-inspector" / "nftables-parser"))
 
 from safe_exec_shell import SafeExecShell, HitlDecision   # noqa: E402
 from cloud_orchestrator import CloudOrchestrator           # noqa: E402
@@ -402,11 +404,6 @@ def _build_ghost_tools() -> types.Tool:
                 "All capture and compare operations are read-only — no firewall rules are modified."
             ),
             parameters=S(type=T.OBJECT, properties={
-                "provider": S(type=T.STRING, enum=["azure", "ssh"], description=(
-                    "azure: probe via az vm run-command (requires Azure CLI and VM_NAME in config). "
-                    "ssh: probe via direct SSH or bastion hop (use for Multipass/dev VMs or when "
-                    "az CLI is unavailable)."
-                )),
                 "is_baseline": S(type=T.BOOLEAN, description=(
                     "If true, capture and store a baseline snapshot. "
                     "Use before a change window or at investigation start."
@@ -425,7 +422,15 @@ def _build_ghost_tools() -> types.Tool:
                 "hypothesis_id": S(type=T.STRING, description=(
                     "ID of the active hypothesis this probe is attributed to (e.g. 'H1')."
                 )),
-            }, required=["provider", "reasoning"]),
+                "explain": S(type=T.BOOLEAN, description=(
+                    "If true, generate an LLM explanation of the firewall state or changes "
+                    "and return it in the 'explanation' field. "
+                    "ONLY set this when the user explicitly asks for a firewall explanation. "
+                    "Do NOT set it on your own initiative during an investigation. "
+                    "Can be combined with is_baseline=true (capture+explain in one call) "
+                    "or used alone with session_id=<existing_session> (explain a prior snapshot)."
+                )),
+            }, required=["reasoning"]),
         ),
     ])
 
@@ -491,8 +496,7 @@ INVESTIGATION FRAMEWORK:
    call detect_config_drift(compare_session_id=<prior_baseline>) if a prior baseline exists,
    or detect_config_drift(is_baseline=True) to snapshot the current state — then stop and
    report the snapshot session_id so the operator can compare after the next change.
-   provider=azure: uses az vm run-command (requires FW_VM_NAME in config).
-   provider=ssh: uses direct SSH (requires FW_TARGET_VM_IP and FW_SSH_KEY_PATH in config).
+   The provider (azure or ssh) is set in the config file — do NOT specify it in the tool call.
 3. PACKET CAPTURE (only when local diagnostics are inconclusive AND failure is time-sensitive or intermittent):
    capture_traffic blocks until complete (download + forensic analysis done). On return:
    • status=task_completed → result contains report_path. Cat report_path directly — auto-approved (SAFE).
@@ -688,6 +692,27 @@ KEY RULE: [LOCAL] results NEVER override [CLOUD] API or PCAP findings.
    same investigation. That produces a trivially empty diff (nothing can change in seconds) and
    is not evidence. A compare is only valid against a baseline from a prior run or change window.
    Use this when Azure NSG and route checks are clean and traffic is still unexpectedly blocked.
+   EXPLAIN PARAMETER (user-directed only):
+   - WHEN the user asks for a firewall explanation (e.g. "explain the firewall state",
+     "explain what the rules are doing", "what do these rules mean", "explain the changes"):
+     you MUST call detect_config_drift with explain=true. Two patterns are valid:
+       (a) Combined: detect_config_drift(is_baseline=True, explain=True, ...) — capture + explain
+       (b) Standalone: detect_config_drift(explain=True, session_id=<session_id>, ...) — explain an
+           existing snapshot. Use this AFTER a baseline capture to add explanation in a second call.
+     Do NOT write your own firewall analysis or summary — always delegate to explain=True.
+   - WHEN the user does NOT ask for an explanation: do NOT pass explain=true. The structured
+     drift data is sufficient for all diagnostic and forensic tasks.
+     The baseline result includes "blocking_rules" (explicit DROP/REJECT rules and default DROP
+     policies), "inbound_default_drop" (true if INPUT chain has a DROP default policy), and
+     "inbound_explicitly_allowed_ports" (ports with explicit ACCEPT rules). Use these fields to
+     determine if a specific port is blocked WITHOUT calling explain=true:
+       • If inbound_default_drop=true AND the port is NOT in inbound_explicitly_allowed_ports
+         → the port IS blocked at the OS layer (default-deny, no explicit allow)
+       • If a blocking_rules entry has dst_port matching the question
+         → the port is blocked by an explicit DROP/REJECT rule
+     Do NOT escalate to packet capture when the firewall data is conclusive.
+   - When the result contains an "explanation" field, include its FULL content verbatim in the
+     investigation report under a "## Firewall Explanation" section.
 
 CONFLICT RESOLUTION:
 When two results contradict, trust the higher-fidelity source. State explicitly which result you
@@ -1187,11 +1212,36 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
     # Validate mode before writing any temp files
     is_baseline = tool_args.get("is_baseline", False)
     compare_session_id = tool_args.get("compare_session_id", "")
-    if not is_baseline and not compare_session_id:
+    explain_only_session_id = tool_args.get("session_id", "") if tool_args.get("explain") and not is_baseline and not compare_session_id else ""
+    if not is_baseline and not compare_session_id and not explain_only_session_id:
         return {"status": "error",
                 "error": "Either is_baseline=true or compare_session_id must be provided"}
 
-    provider = tool_args.get("provider", "azure")
+    # explain-only mode: no probe, just load existing snapshot and explain it
+    if explain_only_session_id:
+        audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
+        snap_path = Path(audit_dir) / f"{explain_only_session_id}_snapshot.json"
+        if not snap_path.exists():
+            return {"status": "error",
+                    "error": f"snapshot not found for session {explain_only_session_id}"}
+        snap_data = json.loads(snap_path.read_text())
+        rulesets = snap_data.get("rulesets", {})
+        result: dict = {"status": "success", "mode": "explain",
+                        "session_id": explain_only_session_id}
+        try:
+            if "nft" in rulesets and rulesets["nft"] is not None:
+                from nftables_explain import explain_snapshot as _nft_es
+                result["explanation"] = _nft_es(rulesets["nft"])
+            else:
+                from iptables_explain import explain_snapshot as _ipt_es
+                parts = [_ipt_es(rs) for rs in rulesets.values() if rs is not None]
+                if parts:
+                    result["explanation"] = "\n\n---\n\n".join(parts)
+        except Exception as exc:
+            result["explanation_warning"] = f"explain_snapshot failed: {exc}"
+        return result
+
+    provider = tool_args.get("provider") or ghost_cfg.get("PROVIDER", "azure")
     audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
 
     config_lines = [
@@ -1213,6 +1263,8 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         ]
         if ghost_cfg.get("FW_BASTION_PUBLIC_IP"):
             config_lines.append(f'BASTION_PUBLIC_IP={ghost_cfg["FW_BASTION_PUBLIC_IP"]}')
+        if ghost_cfg.get("FW_BASTION_SSH_KEY_PATH"):
+            config_lines.append(f'BASTION_SSH_KEY_PATH={ghost_cfg["FW_BASTION_SSH_KEY_PATH"]}')
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".env", delete=False) as tmp:
         tmp.write("\n".join(config_lines) + "\n")
@@ -1253,8 +1305,89 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
                     "exit_code": proc.returncode}
         snap_path = snapshots[-1]
         session_id = snap_path.name.replace("_snapshot.json", "")
-        return {"status": "success", "mode": "baseline",
-                "session_id": session_id, "artifact": str(snap_path)}
+        result = {"status": "success", "mode": "baseline",
+                  "session_id": session_id, "artifact": str(snap_path)}
+        # Include a compact blocking-rules summary so the brain can diagnose issues
+        # without calling explain=True autonomously.
+        try:
+            snap_data = json.loads(snap_path.read_text())
+            blocking: list[dict] = []
+            for family, rs in snap_data.get("rulesets", {}).items():
+                if not rs:
+                    continue
+                if family == "nft":
+                    for tname, tdata in rs.get("tables", {}).items():
+                        for cname, cdata in tdata.get("chains", {}).items():
+                            if cdata.get("default_policy") in ("drop", "reject"):
+                                blocking.append({"family": "nft",
+                                    "chain": f"{tname}/{cname}",
+                                    "raw_rule": f"default policy {cdata['default_policy']}"})
+                            for r in cdata.get("rules", []):
+                                if r.get("verdict") in ("drop", "reject"):
+                                    blocking.append({"family": "nft",
+                                        "chain": f"{tname}/{cname}",
+                                        "dst_port": r.get("dst_port"),
+                                        "target": r.get("verdict"),
+                                        "raw_rule": r.get("raw_rule", "")})
+                else:
+                    for tname, tdata in rs.get("tables", {}).items():
+                        for cname, cdata in tdata.get("chains", {}).items():
+                            if cdata.get("default_policy") in ("DROP", "REJECT"):
+                                blocking.append({"family": family,
+                                    "chain": f"{tname}/{cname}",
+                                    "raw_rule": f"default policy {cdata['default_policy']}"})
+                            for r in cdata.get("rules", []):
+                                if r.get("target") in ("DROP", "REJECT"):
+                                    blocking.append({"family": family,
+                                        "chain": f"{tname}/{cname}",
+                                        "protocol": r.get("protocol"),
+                                        "dst_port": r.get("dst_port"),
+                                        "source": r.get("source"),
+                                        "target": r.get("target"),
+                                        "raw_rule": r.get("raw_rule", "")})
+            # Collect ports with explicit ACCEPT rules on inbound chains with DROP default
+            # so the brain can determine "is port X blocked?" without calling explain=True.
+            drop_input_families: set[str] = set()
+            for entry in blocking:
+                if "default policy" in entry.get("raw_rule", "") and (
+                        "INPUT" in entry.get("chain", "") or
+                        "input" in entry.get("chain", "")):
+                    drop_input_families.add(entry["family"])
+            inbound_allow_ports: list[str] = []
+            for family, rs in snap_data.get("rulesets", {}).items():
+                if family not in drop_input_families or not rs:
+                    continue
+                for tname, tdata in rs.get("tables", {}).items():
+                    for cname, cdata in tdata.get("chains", {}).items():
+                        if "INPUT" not in cname and "input" not in cname:
+                            continue
+                        for r in cdata.get("rules", []):
+                            port = r.get("dst_port") or r.get("dst_port")
+                            verdict = r.get("target") or r.get("verdict", "")
+                            if port and verdict in ("ACCEPT", "accept", "return"):
+                                inbound_allow_ports.append(port)
+            result["framework"] = snap_data.get("framework", "")
+            result["blocking_rules"] = blocking
+            if drop_input_families:
+                result["inbound_default_drop"] = True
+                result["inbound_explicitly_allowed_ports"] = sorted(set(inbound_allow_ports))
+        except Exception:
+            pass
+        if tool_args.get("explain", False):
+            try:
+                snap_data = json.loads(snap_path.read_text())
+                rulesets = snap_data.get("rulesets", {})
+                if "nft" in rulesets and rulesets["nft"] is not None:
+                    from nftables_explain import explain_snapshot as _nft_es
+                    result["explanation"] = _nft_es(rulesets["nft"])
+                else:
+                    from iptables_explain import explain_snapshot as _ipt_es
+                    parts = [_ipt_es(rs) for rs in rulesets.values() if rs is not None]
+                    if parts:
+                        result["explanation"] = "\n\n---\n\n".join(parts)
+            except Exception as exc:
+                result["explanation_warning"] = f"explain_snapshot failed: {exc}"
+        return result
     else:
         drifts = sorted(
             [p for p in Path(audit_dir).glob("*_drift.json")
@@ -1271,19 +1404,41 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
             return {"status": "error", "error": f"Failed to parse drift artifact: {exc}"}
 
         result: dict = {"status": "success", "mode": "compare", "artifact": str(drifts[-1])}
-        for family in ("ipv4", "ipv6"):
-            fam = data.get("drift_by_family", {}).get(family, {})
-            if fam:
-                fam_result: dict = {
-                    "drift_detected": fam.get("drift_detected", False),
-                    "has_critical_changes": fam.get("has_critical_changes", False),
-                    "summary": fam.get("summary", {}),
-                }
-                # Condense rule-level changes so the Brain can name specific rules
-                changes = fam.get("changes", {})
-                for key in ("rules_added", "rules_removed"):
-                    rules = changes.get(key, [])
-                    if rules:
+        drift_by_family = data.get("drift_by_family", {})
+        for family, fam in drift_by_family.items():
+            if not fam or "error" in fam:
+                if fam:
+                    result[family] = fam
+                continue
+            fam_result: dict = {
+                "drift_detected": fam.get("drift_detected", False),
+                "has_critical_changes": fam.get("has_critical_changes", False),
+                "summary": fam.get("summary", {}),
+            }
+            # Condense rule-level changes so the Brain can name specific rules.
+            # Field names differ by framework: nftables uses verdict/src_addr/dst_addr/comment;
+            # iptables uses target/source/raw_rule. Branch on the family key, not a pre-computed
+            # flag, so the correct fields are always used regardless of what other families exist.
+            changes = fam.get("changes", {})
+            for key in ("rules_added", "rules_removed"):
+                rules = changes.get(key, [])
+                if rules:
+                    if family == "nft":
+                        fam_result[key] = [
+                            {
+                                "table":    r.get("table"),
+                                "chain":    r.get("chain"),
+                                "verdict":  r.get("verdict"),
+                                "protocol": r.get("protocol"),
+                                "dst_port": r.get("dst_port"),
+                                "src_port": r.get("src_port"),
+                                "src_addr": r.get("src_addr"),
+                                "dst_addr": r.get("dst_addr"),
+                                "comment":  r.get("comment"),
+                            }
+                            for r in rules
+                        ]
+                    else:
                         fam_result[key] = [
                             {
                                 "table":    r.get("table"),
@@ -1297,19 +1452,38 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
                             }
                             for r in rules
                         ]
-                for key in ("policy_changes", "chains_added", "chains_removed"):
-                    items = changes.get(key, [])
-                    if items:
-                        fam_result[key] = items
-                result[family] = fam_result
+            for key in ("policy_changes", "chains_added", "chains_removed"):
+                items = changes.get(key, [])
+                if items:
+                    fam_result[key] = items
+            result[family] = fam_result
         result["drift_detected"] = any(
-            data.get("drift_by_family", {}).get(f, {}).get("drift_detected", False)
-            for f in ("ipv4", "ipv6")
+            fam.get("drift_detected", False)
+            for fam in drift_by_family.values()
+            if isinstance(fam, dict) and "error" not in fam
         )
         result["has_critical_changes"] = any(
-            data.get("drift_by_family", {}).get(f, {}).get("has_critical_changes", False)
-            for f in ("ipv4", "ipv6")
+            fam.get("has_critical_changes", False)
+            for fam in drift_by_family.values()
+            if isinstance(fam, dict) and "error" not in fam
         )
+        if tool_args.get("explain", False):
+            # Use the full raw drift_by_family (from the artifact file) — not the
+            # condensed fam_result — so the explain functions get their expected schema.
+            try:
+                if "nft" in drift_by_family:
+                    nft_drift = drift_by_family["nft"]
+                    if nft_drift and "error" not in nft_drift:
+                        from nftables_explain import explain_diff as _nft_ed
+                        result["explanation"] = _nft_ed(nft_drift)
+                else:
+                    from iptables_explain import explain_diff as _ipt_ed
+                    parts = [_ipt_ed(fd) for fd in drift_by_family.values()
+                             if isinstance(fd, dict) and "error" not in fd]
+                    if parts:
+                        result["explanation"] = "\n\n---\n\n".join(parts)
+            except Exception as exc:
+                result["explanation_warning"] = f"explain_diff failed: {exc}"
         return result
 
 
@@ -1627,6 +1801,8 @@ def _generate_rca(state: dict, final_args: dict, shell, session_file: str):
         summary,
         "",
     ]
+    if state.get("fw_explanation"):
+        report_lines += ["## Firewall Explanation", state["fw_explanation"], ""]
 
     # Hypothesis outcome table — cross-reference IDs with descriptions from session state
     hyp_desc = {h.get("id"): h.get("description", "") for h in state.get("hypothesis_log", [])}
@@ -1974,6 +2150,10 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
                 return
 
             result = _dispatch_tool(tool_name, tool_args, shell, orchestrator, ghost_cfg=ghost_cfg)
+
+            # Capture firewall explanation from detect_config_drift for report inclusion
+            if tool_name == "detect_config_drift" and "explanation" in result:
+                state["fw_explanation"] = result["explanation"]
 
             # Track task IDs for capture operations; clear on explicit cleanup
             if tool_name == "capture_traffic":
