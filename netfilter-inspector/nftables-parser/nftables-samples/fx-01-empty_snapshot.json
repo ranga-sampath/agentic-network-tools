@@ -1,0 +1,16 @@
+{
+  "parsed_at": "2026-03-17T05:15:50Z",
+  "input_format": "nft-json",
+  "nft_version": "1.0.9",
+  "json_schema_version": 1,
+  "tables": {},
+  "diagnostics": {
+    "drop_policy_chains": [],
+    "accept_policy_chains": [],
+    "active_drop_rules": [],
+    "unresolved_chain_jumps": [],
+    "inet_tables": [],
+    "sets_referenced_in_rules": {}
+  },
+  "parse_warnings": []
+}

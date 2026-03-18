@@ -1,0 +1,441 @@
+{
+  "parsed_at": "2026-03-17T05:17:05Z",
+  "input_format": "nft-json",
+  "nft_version": "1.0.9",
+  "json_schema_version": 1,
+  "tables": {
+    "inet/filter": {
+      "family": "inet",
+      "name": "filter",
+      "handle": 1,
+      "chains": {
+        "input": {
+          "name": "input",
+          "handle": 2,
+          "is_base_chain": true,
+          "type": "filter",
+          "hook": "input",
+          "priority": 0,
+          "policy": "drop",
+          "rules": [
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 3,
+              "position": 1,
+              "comment": "allow IPv4 ping",
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": "icmp",
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": "echo-request",
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "63bb6c2821b0a5baf45b629b639c24036f5ef89751ba9f39d4d676266ae079e2",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "icmp",
+                        "field": "type"
+                      }
+                    },
+                    "right": "echo-request"
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 4,
+              "position": 2,
+              "comment": "allow IPv6 ping",
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": "icmpv6",
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": "echo-request",
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "d179f6bbf05ead7ea460cc3f9dcaea47d867436e19c4e13a6afa70751c535b9b",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "icmpv6",
+                        "field": "type"
+                      }
+                    },
+                    "right": "echo-request"
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 5,
+              "position": 3,
+              "comment": "IPv6 neighbor discovery \u2014 required for link operation",
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": "icmpv6",
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": "nd-neighbor-solicit",
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "973fe68f7d9fb1bebba86b8338aeabbb651b02355395300ccdc7690f6b359fd9",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "icmpv6",
+                        "field": "type"
+                      }
+                    },
+                    "right": "nd-neighbor-solicit"
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 6,
+              "position": 4,
+              "comment": "block ICMP redirect \u2014 tests icmp_type != negation",
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": "icmp",
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": "redirect",
+              "icmp_type_negated": true,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "961b2b2e9c3a8041e3c399ed8a72b1ca8478faf7470680d5f80e02deca8ed49c",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "!=",
+                    "left": {
+                      "payload": {
+                        "protocol": "icmp",
+                        "field": "type"
+                      }
+                    },
+                    "right": "redirect"
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 7,
+              "position": 5,
+              "comment": "accept policy-marked traffic from ct mark 0x1",
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": null,
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": "1",
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "cb7354d555c1bc694d09927f0e5494975d3cad5c09caeef5311dcafc4b74cc1d",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "ct": {
+                        "key": "mark"
+                      }
+                    },
+                    "right": 1
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 8,
+              "position": 6,
+              "comment": "accept established in original direction on SSH",
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": "tcp",
+              "dst_port": "22",
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": "original",
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "841f81504382393682423f41c5f92fd2bee1f3e8ec797206f7d6ccddedccba4f",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "ct": {
+                        "key": "direction"
+                      }
+                    },
+                    "right": "original"
+                  }
+                },
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "dport"
+                      }
+                    },
+                    "right": 22
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 9,
+              "position": 7,
+              "comment": "drop traffic in zone 1 \u2014 tests ct_zone",
+              "verdict": "drop",
+              "verdict_stops_chain": true,
+              "protocol": null,
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": "1",
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "316ec98f1e32e6f9b1bc74b5eda235e83bdf32b708b489a6bbb00f5b69f508ae",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "ct": {
+                        "key": "zone"
+                      }
+                    },
+                    "right": 1
+                  }
+                },
+                {
+                  "drop": null
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "sets": {}
+    }
+  },
+  "diagnostics": {
+    "drop_policy_chains": [
+      "inet/filter/input"
+    ],
+    "accept_policy_chains": [],
+    "active_drop_rules": [],
+    "unresolved_chain_jumps": [],
+    "inet_tables": [
+      "inet/filter"
+    ],
+    "sets_referenced_in_rules": {}
+  },
+  "parse_warnings": []
+}

@@ -1,0 +1,76 @@
+{
+  "diff_at": "2026-03-17T05:14:36Z",
+  "input_format": "nft-json",
+  "baseline_parsed_at": "2026-03-17T05:14:36Z",
+  "current_parsed_at": "2026-03-17T05:14:36Z",
+  "baseline_parse_warnings": [],
+  "current_parse_warnings": [
+    "Unrecognised expression type 'dnat' moved to opaque_expressions",
+    "Unrecognised expression type 'masquerade' moved to opaque_expressions"
+  ],
+  "drift_detected": true,
+  "has_critical_changes": true,
+  "summary": {
+    "tables_added": 1,
+    "tables_removed": 1,
+    "chains_added": 2,
+    "chains_removed": 3,
+    "policy_changes": 0,
+    "rules_added": 0,
+    "rules_removed": 0,
+    "rules_repositioned": 0,
+    "rules_recreated": 0
+  },
+  "changes": {
+    "tables_added": [
+      "ip/nat"
+    ],
+    "tables_removed": [
+      "ip/filter"
+    ],
+    "chains_added": [
+      {
+        "table": "ip/nat",
+        "chain": "postrouting",
+        "handle": 3,
+        "is_base_chain": true,
+        "rule_count": 1
+      },
+      {
+        "table": "ip/nat",
+        "chain": "prerouting",
+        "handle": 2,
+        "is_base_chain": true,
+        "rule_count": 1
+      }
+    ],
+    "chains_removed": [
+      {
+        "table": "ip/filter",
+        "chain": "forward",
+        "handle": 3,
+        "is_base_chain": true,
+        "rule_count": 0
+      },
+      {
+        "table": "ip/filter",
+        "chain": "input",
+        "handle": 2,
+        "is_base_chain": true,
+        "rule_count": 0
+      },
+      {
+        "table": "ip/filter",
+        "chain": "output",
+        "handle": 4,
+        "is_base_chain": true,
+        "rule_count": 3
+      }
+    ],
+    "policy_changes": [],
+    "rules_added": [],
+    "rules_removed": [],
+    "rules_repositioned": [],
+    "rules_recreated": []
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    {"table": {"family": "ip", "name": "filter", "handle": 1}},
+    {"chain": {"family": "ip", "table": "filter", "name": "input",       "handle": 2, "type": "filter", "hook": "input", "prio": 0, "policy": "accept"}},
+    {"chain": {"family": "ip", "table": "filter", "name": "check-flags", "handle": 3}},
+    {"chain": {"family": "ip", "table": "filter", "name": "allowed",     "handle": 4}},
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 5,
+        "comment": "log and accept SSH — tests is_log + log_prefix + accept together",
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}},
+          {"log": {"prefix": "SSH-IN: "}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 6,
+        "comment": "reject telnet — tests reject verdict",
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 23}},
+          {"reject": {"type": "icmpx", "expr": "port-unreach"}}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "check-flags", "handle": 7,
+        "comment": "return if established — tests return verdict",
+        "expr": [
+          {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": ["established"]}},
+          {"return": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "check-flags", "handle": 8,
+        "comment": "goto defined chain — tests goto_target (resolved)",
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 80}},
+          {"goto": {"target": "allowed"}}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "check-flags", "handle": 9,
+        "comment": "goto undefined chain — tests goto_target (unresolved → diagnostics)",
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 443}},
+          {"goto": {"target": "missing_chain"}}
+        ]
+      }
+    }
+  ]
+}

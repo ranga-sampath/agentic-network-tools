@@ -1,0 +1,47 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    {"table": {"family": "ip",  "name": "filter", "handle": 1}},
+    {"chain": {"family": "ip",  "table": "filter", "name": "input",  "handle": 2, "type": "filter", "hook": "input",  "prio": 0, "policy": "accept"}},
+    {"chain": {"family": "ip",  "table": "filter", "name": "output", "handle": 3, "type": "filter", "hook": "output", "prio": 0, "policy": "accept"}},
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 4,
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "output", "handle": 5,
+        "expr": [
+          {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": ["established", "related"]}},
+          {"accept": null}
+        ]
+      }
+    },
+    {"table": {"family": "ip6", "name": "filter", "handle": 6}},
+    {"chain": {"family": "ip6", "table": "filter", "name": "input",  "handle": 7, "type": "filter", "hook": "input",  "prio": 0, "policy": "accept"}},
+    {"chain": {"family": "ip6", "table": "filter", "name": "output", "handle": 8, "type": "filter", "hook": "output", "prio": 0, "policy": "accept"}},
+    {
+      "rule": {
+        "family": "ip6", "table": "filter", "chain": "input", "handle": 9,
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": "::1/128"}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip6", "table": "filter", "chain": "output", "handle": 10,
+        "expr": [
+          {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": ["established", "related"]}},
+          {"accept": null}
+        ]
+      }
+    }
+  ]
+}

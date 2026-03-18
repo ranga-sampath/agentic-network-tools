@@ -1,0 +1,37 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    {"table": {"family": "inet", "name": "filter", "handle": 1}},
+    {"chain": {"family": "inet", "table": "filter", "name": "input",   "handle": 2, "type": "filter", "hook": "input",   "prio": 0, "policy": "drop"}},
+    {"chain": {"family": "inet", "table": "filter", "name": "forward", "handle": 3, "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"}},
+    {"chain": {"family": "inet", "table": "filter", "name": "output",  "handle": 4, "type": "filter", "hook": "output",  "prio": 0, "policy": "accept"}},
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 5,
+        "expr": [
+          {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": ["established", "related"]}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 6,
+        "expr": [
+          {"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 7,
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}},
+          {"match": {"op": "in", "left": {"ct": {"key": "state"}}, "right": ["new"]}},
+          {"accept": null}
+        ]
+      }
+    }
+  ]
+}

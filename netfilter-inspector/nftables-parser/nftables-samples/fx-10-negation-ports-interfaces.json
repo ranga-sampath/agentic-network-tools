@@ -1,0 +1,59 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    {"table": {"family": "ip", "name": "filter", "handle": 1}},
+    {"chain": {"family": "ip", "table": "filter", "name": "input", "handle": 2, "type": "filter", "hook": "input", "prio": 0, "policy": "accept"}},
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 3,
+        "comment": "drop traffic from RFC-1918 10.x except local — tests src_addr_negated",
+        "expr": [
+          {"match": {"op": "!=", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": {"prefix": {"addr": "10.0.0.0", "len": 8}}}},
+          {"drop": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 4,
+        "comment": "drop all but SSH — tests dst_port_negated",
+        "expr": [
+          {"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}},
+          {"match": {"op": "!=", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}},
+          {"drop": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 5,
+        "comment": "accept established-range source ports — tests sport port range",
+        "expr": [
+          {"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}},
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "sport"}}, "right": {"range": [1024, 65535]}}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 6,
+        "comment": "drop traffic arriving on untrusted interface — tests in_interface_negated",
+        "expr": [
+          {"match": {"op": "!=", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}},
+          {"drop": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "filter", "chain": "input", "handle": 7,
+        "comment": "accept traffic leaving on trusted interface — tests out_interface without negation",
+        "expr": [
+          {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "eth1"}},
+          {"accept": null}
+        ]
+      }
+    }
+  ]
+}

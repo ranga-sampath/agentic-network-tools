@@ -1,0 +1,79 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    {"table": {"family": "inet", "name": "filter", "handle": 1}},
+    {"chain": {"family": "inet", "table": "filter", "name": "input", "handle": 2,
+               "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}},
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 3,
+        "comment": "allow IPv4 ping",
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "icmp", "field": "type"}}, "right": "echo-request"}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 4,
+        "comment": "allow IPv6 ping",
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "icmpv6", "field": "type"}}, "right": "echo-request"}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 5,
+        "comment": "IPv6 neighbor discovery — required for link operation",
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "icmpv6", "field": "type"}}, "right": "nd-neighbor-solicit"}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 6,
+        "comment": "block ICMP redirect — tests icmp_type != negation",
+        "expr": [
+          {"match": {"op": "!=", "left": {"payload": {"protocol": "icmp", "field": "type"}}, "right": "redirect"}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 7,
+        "comment": "accept policy-marked traffic from ct mark 0x1",
+        "expr": [
+          {"match": {"op": "==", "left": {"ct": {"key": "mark"}}, "right": 1}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 8,
+        "comment": "accept established in original direction on SSH",
+        "expr": [
+          {"match": {"op": "==", "left": {"ct": {"key": "direction"}}, "right": "original"}},
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}},
+          {"accept": null}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "inet", "table": "filter", "chain": "input", "handle": 9,
+        "comment": "drop traffic in zone 1 — tests ct_zone",
+        "expr": [
+          {"match": {"op": "==", "left": {"ct": {"key": "zone"}}, "right": 1}},
+          {"drop": null}
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,261 @@
+{
+  "parsed_at": "2026-03-17T05:03:52Z",
+  "input_format": "nft-json",
+  "nft_version": "1.0.9",
+  "json_schema_version": 1,
+  "tables": {
+    "inet/filter": {
+      "family": "inet",
+      "name": "filter",
+      "handle": 1,
+      "chains": {
+        "input": {
+          "name": "input",
+          "handle": 2,
+          "is_base_chain": true,
+          "type": "filter",
+          "hook": "input",
+          "priority": 0,
+          "policy": "accept",
+          "rules": [
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 4,
+              "position": 1,
+              "comment": null,
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": null,
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": [
+                "established",
+                "related"
+              ],
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "449cc4c202effc07713e4764bc34bb98f4daf1de7de8bcb975466fd1dd525d56",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "in",
+                    "left": {
+                      "ct": {
+                        "key": "state"
+                      }
+                    },
+                    "right": [
+                      "established",
+                      "related"
+                    ]
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "inet/filter",
+              "chain": "input",
+              "handle": 5,
+              "position": 2,
+              "comment": null,
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": "tcp",
+              "dst_port": "22",
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "d803273282c7e9fa13c6d911f7acd087dca72f9b6cdddf30fbf809f85632107a",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "dport"
+                      }
+                    },
+                    "right": 22
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            }
+          ]
+        },
+        "output": {
+          "name": "output",
+          "handle": 3,
+          "is_base_chain": true,
+          "type": "filter",
+          "hook": "output",
+          "priority": 0,
+          "policy": "accept",
+          "rules": []
+        }
+      },
+      "sets": {}
+    },
+    "ip/nat": {
+      "family": "ip",
+      "name": "nat",
+      "handle": 6,
+      "chains": {
+        "prerouting": {
+          "name": "prerouting",
+          "handle": 7,
+          "is_base_chain": true,
+          "type": "nat",
+          "hook": "prerouting",
+          "priority": -100,
+          "policy": "accept",
+          "rules": []
+        },
+        "postrouting": {
+          "name": "postrouting",
+          "handle": 8,
+          "is_base_chain": true,
+          "type": "nat",
+          "hook": "postrouting",
+          "priority": 100,
+          "policy": "accept",
+          "rules": [
+            {
+              "table": "ip/nat",
+              "chain": "postrouting",
+              "handle": 9,
+              "position": 1,
+              "comment": null,
+              "verdict": null,
+              "verdict_stops_chain": false,
+              "protocol": null,
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": "10.0.0.0/8",
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": [
+                {
+                  "masquerade": null
+                }
+              ],
+              "expression_hash": "56f79b3539f2639039e5369c16e748adc597e010fdf5b6aa3e73bab7d6635153",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "ip",
+                        "field": "saddr"
+                      }
+                    },
+                    "right": "10.0.0.0/8"
+                  }
+                },
+                {
+                  "masquerade": null
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "sets": {}
+    }
+  },
+  "diagnostics": {
+    "drop_policy_chains": [],
+    "accept_policy_chains": [
+      "inet/filter/input",
+      "inet/filter/output",
+      "ip/nat/postrouting",
+      "ip/nat/prerouting"
+    ],
+    "active_drop_rules": [],
+    "unresolved_chain_jumps": [],
+    "inet_tables": [
+      "inet/filter"
+    ],
+    "sets_referenced_in_rules": {}
+  },
+  "parse_warnings": [
+    "Unrecognised expression type 'masquerade' moved to opaque_expressions"
+  ]
+}

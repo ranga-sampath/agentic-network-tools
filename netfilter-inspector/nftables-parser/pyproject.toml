@@ -1,0 +1,14 @@
+[project]
+name = "nftables-parser"
+version = "0.1.0"
+description = "Parse nft --json list ruleset output into structured JSON, with optional LLM explanation via Gemini"
+requires-python = ">=3.9"
+dependencies = [
+    "google-genai>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-timeout>=0.1.0",
+]

@@ -1,0 +1,362 @@
+{
+  "parsed_at": "2026-03-17T05:18:06Z",
+  "input_format": "nft-json",
+  "nft_version": "1.0.9",
+  "json_schema_version": 1,
+  "tables": {
+    "ip/filter": {
+      "family": "ip",
+      "name": "filter",
+      "handle": 1,
+      "chains": {
+        "input": {
+          "name": "input",
+          "handle": 2,
+          "is_base_chain": true,
+          "type": "filter",
+          "hook": "input",
+          "priority": 0,
+          "policy": "accept",
+          "rules": [
+            {
+              "table": "ip/filter",
+              "chain": "input",
+              "handle": 5,
+              "position": 1,
+              "comment": "log and accept SSH \u2014 tests is_log + log_prefix + accept together",
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": "tcp",
+              "dst_port": "22",
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": true,
+              "log_prefix": "SSH-IN: ",
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "0c00c0df86b90b28d42cb411a87232718c83f632ee12ea1a4063b597a552e655",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "dport"
+                      }
+                    },
+                    "right": 22
+                  }
+                },
+                {
+                  "log": {
+                    "prefix": "SSH-IN: "
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            },
+            {
+              "table": "ip/filter",
+              "chain": "input",
+              "handle": 6,
+              "position": 2,
+              "comment": "reject telnet \u2014 tests reject verdict",
+              "verdict": "reject",
+              "verdict_stops_chain": true,
+              "protocol": "tcp",
+              "dst_port": "23",
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "74080d1c8fabdfd9b209abc0bbbd5b791297a0312c1bc285ad0b82c5f2c93d1c",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "dport"
+                      }
+                    },
+                    "right": 23
+                  }
+                },
+                {
+                  "reject": {
+                    "type": "icmpx",
+                    "expr": "port-unreach"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "check-flags": {
+          "name": "check-flags",
+          "handle": 3,
+          "is_base_chain": false,
+          "type": null,
+          "hook": null,
+          "priority": null,
+          "policy": null,
+          "rules": [
+            {
+              "table": "ip/filter",
+              "chain": "check-flags",
+              "handle": 7,
+              "position": 1,
+              "comment": "return if established \u2014 tests return verdict",
+              "verdict": "return",
+              "verdict_stops_chain": false,
+              "protocol": null,
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": [
+                "established"
+              ],
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "061bd292f29746aa2c7905e71b15f72a96c687b9f3fa155605b388ec731c1602",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "in",
+                    "left": {
+                      "ct": {
+                        "key": "state"
+                      }
+                    },
+                    "right": [
+                      "established"
+                    ]
+                  }
+                },
+                {
+                  "return": null
+                }
+              ]
+            },
+            {
+              "table": "ip/filter",
+              "chain": "check-flags",
+              "handle": 8,
+              "position": 2,
+              "comment": "goto defined chain \u2014 tests goto_target (resolved)",
+              "verdict": null,
+              "verdict_stops_chain": false,
+              "protocol": "tcp",
+              "dst_port": "80",
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": "allowed",
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "f99b506a9a2ae1432ce78b55cd2050fd66d93b6b5ac3cd01e1182de3c645aad0",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "dport"
+                      }
+                    },
+                    "right": 80
+                  }
+                },
+                {
+                  "goto": {
+                    "target": "allowed"
+                  }
+                }
+              ]
+            },
+            {
+              "table": "ip/filter",
+              "chain": "check-flags",
+              "handle": 9,
+              "position": 3,
+              "comment": "goto undefined chain \u2014 tests goto_target (unresolved \u2192 diagnostics)",
+              "verdict": null,
+              "verdict_stops_chain": false,
+              "protocol": "tcp",
+              "dst_port": "443",
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": "missing_chain",
+              "set_references": [],
+              "opaque_expressions": null,
+              "expression_hash": "e313271dc9d6123f0e3ebcaa0753ef5831221797bed6b9e7f650cbfd15517201",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "tcp",
+                        "field": "dport"
+                      }
+                    },
+                    "right": 443
+                  }
+                },
+                {
+                  "goto": {
+                    "target": "missing_chain"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "allowed": {
+          "name": "allowed",
+          "handle": 4,
+          "is_base_chain": false,
+          "type": null,
+          "hook": null,
+          "priority": null,
+          "policy": null,
+          "rules": []
+        }
+      },
+      "sets": {}
+    }
+  },
+  "diagnostics": {
+    "drop_policy_chains": [],
+    "accept_policy_chains": [
+      "ip/filter/input"
+    ],
+    "active_drop_rules": [],
+    "unresolved_chain_jumps": [
+      {
+        "table": "ip/filter",
+        "chain": "check-flags",
+        "handle": 9,
+        "position": 3,
+        "goto_target": "missing_chain"
+      }
+    ],
+    "inet_tables": [],
+    "sets_referenced_in_rules": {}
+  },
+  "parse_warnings": []
+}

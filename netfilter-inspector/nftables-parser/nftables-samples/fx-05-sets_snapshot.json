@@ -1,0 +1,214 @@
+{
+  "parsed_at": "2026-03-17T05:16:02Z",
+  "input_format": "nft-json",
+  "nft_version": "1.0.9",
+  "json_schema_version": 1,
+  "tables": {
+    "ip/filter": {
+      "family": "ip",
+      "name": "filter",
+      "handle": 1,
+      "chains": {
+        "input": {
+          "name": "input",
+          "handle": 2,
+          "is_base_chain": true,
+          "type": "filter",
+          "hook": "input",
+          "priority": 0,
+          "policy": "accept",
+          "rules": [
+            {
+              "table": "ip/filter",
+              "chain": "input",
+              "handle": 12,
+              "position": 1,
+              "comment": null,
+              "verdict": "drop",
+              "verdict_stops_chain": true,
+              "protocol": null,
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [
+                "blocklist"
+              ],
+              "opaque_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "ip",
+                        "field": "saddr"
+                      }
+                    },
+                    "right": "@blocklist"
+                  }
+                }
+              ],
+              "expression_hash": "929f67079c861c6d19bf5511d5f0af5e5e90b1df1542b62c866d6a80a1ab85ab",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "ip",
+                        "field": "saddr"
+                      }
+                    },
+                    "right": "@blocklist"
+                  }
+                },
+                {
+                  "drop": null
+                }
+              ]
+            },
+            {
+              "table": "ip/filter",
+              "chain": "input",
+              "handle": 13,
+              "position": 2,
+              "comment": null,
+              "verdict": "accept",
+              "verdict_stops_chain": true,
+              "protocol": null,
+              "dst_port": null,
+              "src_port": null,
+              "src_addr": null,
+              "dst_addr": null,
+              "in_interface": null,
+              "out_interface": null,
+              "ct_state": null,
+              "protocol_negated": false,
+              "src_addr_negated": false,
+              "dst_addr_negated": false,
+              "src_port_negated": false,
+              "dst_port_negated": false,
+              "in_interface_negated": false,
+              "out_interface_negated": false,
+              "icmp_type": null,
+              "icmp_type_negated": false,
+              "icmp_code": null,
+              "icmp_code_negated": false,
+              "ct_mark": null,
+              "ct_mark_negated": false,
+              "ct_direction": null,
+              "ct_zone": null,
+              "is_log": false,
+              "log_prefix": null,
+              "jump_target": null,
+              "goto_target": null,
+              "set_references": [
+                "allowlist"
+              ],
+              "opaque_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "ip",
+                        "field": "saddr"
+                      }
+                    },
+                    "right": "@allowlist"
+                  }
+                }
+              ],
+              "expression_hash": "e8c05621fb9b0571d327f508cb297cf1dc4909b2eaed525734ef6b01ca84d025",
+              "raw_expressions": [
+                {
+                  "match": {
+                    "op": "==",
+                    "left": {
+                      "payload": {
+                        "protocol": "ip",
+                        "field": "saddr"
+                      }
+                    },
+                    "right": "@allowlist"
+                  }
+                },
+                {
+                  "accept": null
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "sets": {
+        "blocklist": {
+          "name": "blocklist",
+          "handle": 10,
+          "type": "ipv4_addr",
+          "is_map": false,
+          "elements": [
+            "10.0.0.0/8",
+            "192.168.0.0/16",
+            "172.16.0.0/12"
+          ],
+          "flags": [
+            "interval"
+          ],
+          "timeout": null
+        },
+        "port-map": {
+          "name": "port-map",
+          "handle": 11,
+          "type": "inet_service",
+          "is_map": true,
+          "elements": null,
+          "flags": [],
+          "timeout": null
+        }
+      }
+    }
+  },
+  "diagnostics": {
+    "drop_policy_chains": [],
+    "accept_policy_chains": [
+      "ip/filter/input"
+    ],
+    "active_drop_rules": [],
+    "unresolved_chain_jumps": [],
+    "inet_tables": [],
+    "sets_referenced_in_rules": {
+      "blocklist": {
+        "table": "ip/filter",
+        "found": true
+      },
+      "allowlist": {
+        "table": "ip/filter",
+        "found": false
+      }
+    }
+  },
+  "parse_warnings": []
+}

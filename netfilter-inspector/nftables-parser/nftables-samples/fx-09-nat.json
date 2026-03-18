@@ -1,0 +1,26 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+    {"table": {"family": "ip", "name": "nat", "handle": 1}},
+    {"chain": {"family": "ip", "table": "nat", "name": "prerouting",  "handle": 2, "type": "nat", "hook": "prerouting",  "prio": "dstnat", "policy": "accept"}},
+    {"chain": {"family": "ip", "table": "nat", "name": "postrouting", "handle": 3, "type": "nat", "hook": "postrouting", "prio": "srcnat", "policy": "accept"}},
+    {
+      "rule": {
+        "family": "ip", "table": "nat", "chain": "prerouting", "handle": 4,
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 80}},
+          {"dnat": {"addr": "192.168.1.10", "port": 8080}}
+        ]
+      }
+    },
+    {
+      "rule": {
+        "family": "ip", "table": "nat", "chain": "postrouting", "handle": 5,
+        "expr": [
+          {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": {"prefix": {"addr": "192.168.1.0", "len": 24}}}},
+          {"masquerade": null}
+        ]
+      }
+    }
+  ]
+}
