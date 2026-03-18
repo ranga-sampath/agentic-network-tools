@@ -49,9 +49,17 @@ agentic-pipe-meter/config.env
 agentic-pipe-meter/tests/test-report.md
 
 # Netfilter Inspector — runtime artifacts, local dev configs, and internal plans
+netfilter-inspector/config.env
 netfilter-inspector/firewall-inspector/config.env
 netfilter-inspector/firewall-inspector/multipass-config.env
+netfilter-inspector/firewall-inspector/nftables-config.env
 netfilter-inspector/firewall-inspector/plans/
+netfilter-inspector/firewall-inspector/audit-nft/
+netfilter-inspector/test-audit/
+
+# Ghost Agent — additional runtime artifact directories
+network-ghost-agent/test-audit/
+network-ghost-agent/audit-layer4/
 
 # uv scaffold placeholder
 main.py

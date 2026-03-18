@@ -1,7 +1,7 @@
 # Netfilter Inspector — Architecture
 
-*Status: MVP shipped — 2026-03-15*
-*Scope: iptables-parser module + firewall-inspector module*
+*Status: Active development — 2026-03-16*
+*Scope: iptables-parser module + nftables-parser module + firewall-inspector module*
 
 ---
 
@@ -9,7 +9,10 @@
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Parser input format | `iptables-save` / `ip6tables-save` text only | The de facto standard for Linux firewall state capture; produced by every backup script, change procedure, and incident response workflow. No other format reaches the same corpus breadth. |
+| iptables-parser input format | `iptables-save` / `ip6tables-save` text only | The de facto standard for Linux firewall state capture; produced by every backup script, change procedure, and incident response workflow. No other format reaches the same corpus breadth. |
+| nftables-parser input format | `nft --json list ruleset` JSON output | The nftables DSL text format is a recursive context-sensitive grammar — not suitable for a stdlib-only parser. The `--json` flag produces a well-specified, machine-readable JSON structure available on nft 0.9.1+ (Ubuntu 20.04+, all current Azure VM images). JSON input also enables handle-based rule identity: nftables assigns a stable integer handle to each rule, which is a better primary key than a computed hash over flag fields. |
+| nftables-parser rule identity | `handle` as primary key; expression SHA-256 hash as secondary | nftables assigns a unique integer handle to every rule within a chain. Drift detection uses handle presence/absence as primary: a missing handle = removed rule, a new handle = added rule. The expression hash enables semantic equivalence detection when a rule is deleted and re-added (new handle, same content) — those appear as remove+add with a cross-reference note rather than as two unrelated changes. |
+| nftables `inet` family handling | Parsed as a single dual-stack table; no family split | `inet` tables apply to both IPv4 and IPv6 in a single ruleset. Splitting them by protocol would misrepresent the policy — an `inet` table with `policy drop` drops both IPv4 and IPv6 traffic. The parser preserves `inet` as a first-class family; the drift engine and firewall-inspector treat it as a third family alongside `ip` and `ip6`. |
 | Parser output format | Structured JSON dict (`parse_iptables_save()`) | Every downstream consumer — diff engine, orchestrator, Ghost Agent — queries by key, not by line number. JSON is self-describing and directly serialisable. |
 | Diff engine placement | `iptables-parser/` module (as `iptables_diff.py`) | The diff engine operates entirely on `parse_iptables_save()` output. Its only dependency is the parser output schema. Co-locating it with the parser makes the dependency explicit and prevents a layering inversion where `firewall-inspector` would own a component that `iptables-parser` depends on. |
 | Rule identity definition | Frozen field list (`_RULE_IDENTITY_FIELDS`) | Identity must be stable across captures. Deriving identity fields dynamically would make the definition a runtime variable, breaking baseline comparisons when the derivation changes. Explicit enumeration makes schema changes deliberate and auditable. |
@@ -19,7 +22,7 @@
 | Session ID as artifact namespace | Caller-supplied, validated `^[a-zA-Z0-9_-]{1,64}$` | Every artifact produced by a pipeline run uses the session_id as a filename prefix. This makes all artifacts for a run discoverable by glob, enables cross-stage restartability, and prevents directory traversal via filename injection. Validation fires before any shell command is constructed. |
 | Baseline integrity | SHA-256 of snapshot JSON bytes, stored in a `.sha256` companion file | A mutated snapshot must not silently pass as a valid baseline. The companion file records the hash at write time; the compare path verifies it at read time. Any modification — accidental or deliberate — raises `IntegrityError` before the diff runs. |
 | Framework detection | Probe-based, not config-file-based | Config files describe intent; the probe observes what is actually enforced. A system with `nftables` installed but `iptables-legacy` active (via `update-alternatives`) would be misclassified by a config-file approach. |
-| `--family` scope | `ipv4`, `ipv6`, or `both` | IPv6 tables are a separate kernel subsystem probed by `ip6tables-save`. Treating them as one combined ruleset would conflate address families. `both` runs two separate probes and produces two separate parsed outputs. |
+| `--family` scope | `ipv4`, `ipv6`, or `both` (iptables only) | IPv6 tables are a separate kernel subsystem probed by `ip6tables-save`. Treating them as one combined ruleset would conflate address families. `both` runs two separate probes and produces two separate parsed outputs. For nftables VMs, `config.family` is ignored — nftables uses a single unified ruleset (`nft --json list ruleset`) covering all address families. The parse result is stored under the single key `"nft"` regardless of what `FAMILY` was set to in the config. |
 | Audit directory | Local filesystem, caller-supplied path | No cloud storage dependency in the core pipeline. The directory is the only shared state between pipeline stages and between runs. Ghost Agent can supply a run-specific directory; a standalone operator supplies their own. |
 | Safety classification for probe commands | Read-only `sudo iptables-save` / `sudo ip6tables-save` | These commands produce no side effects on the target VM. They are classified SAFE in the Ghost Agent tool decision rules — no HITL gate is required for baseline capture or comparison runs. |
 | HITL gate for NSG port-open remediation | Gate exists in `SafeExecShell` (Ghost Agent mode); absent in `LocalShell` (standalone mode) | Opening a firewall rule is a mutative, network-affecting action. In Ghost Agent mode, `SafeExecShell` classifies `az network nsg rule create` as MUTATIVE and blocks until the operator approves. In standalone mode, `LocalShell` executes commands immediately — the operator is the gate by virtue of controlling the CLI invocation directly. |
@@ -35,8 +38,10 @@
 │                                                                        │
 │  CLI: firewall_inspector.py --config config.env --is-baseline         │
 │       firewall_inspector.py --config config.env --compare-baseline ID │
-│  CLI: iptables_parser.py [file]                                        │
+│  CLI: iptables_parser.py [file]    (iptables-save text input)         │
 │  CLI: iptables_diff.py baseline.json current.json                     │
+│  CLI: nftables_parser.py [file]    (nft --json list ruleset input)    │
+│  CLI: nftables_diff.py baseline.json current.json                     │
 └──────────────────────────┬─────────────────────────────────────────────┘
                            │
                            ▼
@@ -58,11 +63,16 @@
 │  │        │                                                        │    │
 │  │  Stage 3: Framework detection  ◄── framework_detector.py       │    │
 │  │        │                                                        │    │
-│  │  Stage 4: Parse                ◄── iptables_parser.py          │    │
+│  │  Stage 4: Parse                                                 │    │
+│  │    iptables* ──► iptables_parser.py                             │    │
+│  │    nftables  ──► nftables_parser.py                             │    │
 │  │        │                                                        │    │
-│  │  Stage 5: Diff / baseline save ◄── iptables_diff.py            │    │
+│  │  Stage 5: Diff / baseline save                                  │    │
+│  │    iptables* ──► iptables_diff.py                               │    │
+│  │    nftables  ──► nftables_diff.py                               │    │
+│  │    (routing: by baseline input_format)                          │    │
 │  │        │                                                        │    │
-│  │  Stage 6: Classify             ◄── chain_classifier.py         │    │
+│  │  Stage 6: Classify (iptables)  ◄── chain_classifier.py         │    │
 │  │        │                                                        │    │
 │  │  Stage 7: Report (stdout + JSON artifact)                      │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
@@ -90,18 +100,20 @@
            │               │                                   │
            ▼               ▼                                   ▼
 ┌────────────────┐  ┌──────────────────┐           ┌──────────────────────┐
-│ TARGET VM      │  │ iptables-parser/ │           │ Network Ghost Agent  │
-│                │  │                  │           │                      │
-│ probe.sh runs  │  │ iptables_parser  │           │ Calls                │
-│ as root:       │  │  .py             │           │ firewall_inspector   │
-│ iptables-save  │  │   parse_         │           │ as a tool            │
-│ ip6tables-save │  │   iptables_save()│           │                      │
-│                │  │                  │           │ Reads diff artifact  │
-│ Access via:    │  │ iptables_diff    │           │ for RCA chain        │
-│ • Azure run-   │  │  .py             │           └──────────────────────┘
-│   command      │  │   diff_          │
-│ • Direct SSH   │  │   rulesets()     │
-│ • SSH via      │  └──────────────────┘
+│ TARGET VM      │  │ iptables-parser/ │  ┌──────────────────┐  ┌──────────────────────┐
+│                │  │                  │  │ nftables-parser/ │  │ Network Ghost Agent  │
+│ probe.sh runs  │  │ iptables_parser  │  │                  │  │                      │
+│ as root:       │  │  .py             │  │ nftables_parser  │  │ Calls                │
+│ iptables-save  │  │   parse_         │  │  .py             │  │ firewall_inspector   │
+│ ip6tables-save │  │   iptables_save()│  │   parse_nft_     │  │ as a tool            │
+│ nft --json     │  │                  │  │   ruleset()      │  │                      │
+│   list ruleset │  │ iptables_diff    │  │                  │  │ Reads diff artifact  │
+│                │  │  .py             │  │ nftables_diff    │  │ for RCA chain        │
+│ Access via:    │  │   diff_          │  │  .py             │  └──────────────────────┘
+│ • Azure run-   │  │   rulesets()     │  │   diff_          │
+│   command      │  └──────────────────┘  │   rulesets()     │
+│ • Direct SSH   │                        └──────────────────┘
+│ • SSH via      │
 │   bastion      │
 └────────────────┘
 ```
@@ -134,6 +146,30 @@
 | **May not do** | Execute shell commands; query any external system; compare rulesets across address families; modify inputs |
 | **Dependencies** | Consumes `iptables_parser.py` output schema (no import dependency) |
 
+### `nftables-parser/nftables_parser.py`
+
+| Attribute | Value |
+|-----------|-------|
+| **Exposes** | `parse_nft_ruleset(text: str) → dict` |
+| **CLI** | `python3 nftables_parser.py [file] [--indent N]` |
+| **Input** | Raw JSON string from `nft --json list ruleset` |
+| **Output** | Structured dict: `{parsed_at, input_format, nft_version, tables, diagnostics, parse_warnings}` |
+| **May do** | Parse any syntactically valid `nft --json` output; extract rule expressions into normalized fields where possible; mark complex expressions as opaque; run diagnostics (drop-policy chains, unresolved chain jumps, inet dual-stack tables) |
+| **May not do** | Execute any shell command; read from a VM; perform network I/O; call the diff engine; parse nftables text DSL format |
+| **Dependencies** | None (stdlib only — `json`, `hashlib`, `re`, `argparse`) |
+
+### `nftables-parser/nftables_diff.py`
+
+| Attribute | Value |
+|-----------|-------|
+| **Exposes** | `diff_rulesets(baseline: dict, current: dict) → dict` |
+| **CLI** | `python3 nftables_diff.py baseline.json current.json [--indent N]`; accepts `-` for stdin |
+| **Input** | Two `parse_nft_ruleset()` output dicts |
+| **Output** | Structured diff: `{diff_at, drift_detected, has_critical_changes, summary, changes}` |
+| **May do** | Compare two nft rulesets; classify drift by type (tables/chains/policy/rules/repositioned/recreated); determine criticality |
+| **May not do** | Execute shell commands; compare rulesets of different input_format values; modify inputs |
+| **Dependencies** | Consumes `nftables_parser.py` output schema (no import dependency) |
+
 ### `firewall-inspector/framework_detector.py`
 
 | Attribute | Value |
@@ -152,7 +188,7 @@
 | **Tiers** | `structural` (policy changes, chain adds/removes), `ephemeral` (repositioning only), `user-defined` |
 | **May do** | Read diff output; attach classification metadata to each change entry |
 | **May not do** | Modify `drift_detected` or `has_critical_changes`; access the filesystem; call external APIs |
-| **Dependencies** | Consumes `iptables_diff.py` output schema |
+| **Dependencies** | Consumes `iptables_diff.py` output schema only. `classify_diff()` is not called for nftables diffs — the chain name patterns it uses (KUBE-SEP-, DOCKER, f2b-, ufw-) are iptables-specific. |
 
 ### `firewall-inspector/providers.py`
 
@@ -208,15 +244,25 @@
 ### `firewall_inspector.py` ↔ `framework_detector.py`
 
 - The orchestrator calls `_extract_version_strings(fw_section)` to pre-split the raw probe section, then passes the resulting dict to `detect_framework(version_strings)`.
-- Detection result is metadata only — it is stored in the snapshot (`framework`, `framework_confidence`) and surfaced to the operator, but it does **not** gate parsing. `parse_iptables_save()` runs regardless of what `detect_framework()` returns. An operator on a mixed or nftables host sees the raw iptables-save output parsed, and the framework field tells them the context.
+- Detection result **gates the parse branch**: `framework == "nftables"` routes to `parse_nft_ruleset()`; all other values route to `parse_iptables_save()`. The two paths are mutually exclusive per run. Detection result is also stored in the snapshot (`framework`, `framework_confidence`) for the operator.
 - Parse warnings from `detect_framework()` are appended to `config.parse_warnings` and surfaced in the snapshot.
 - The orchestrator **must not** make framework decisions outside `detect_framework()`.
 
 ### `firewall_inspector.py` ↔ `chain_classifier.py`
 
-- The orchestrator calls `classify_diff(diff_dict)` after `diff_rulesets()` completes.
+- The orchestrator calls `classify_diff(diff_dict)` after `diff_rulesets()` completes — for iptables diffs only.
+- `classify_diff()` is **not** called for nftables diffs. The chain name patterns it contains (KUBE-SEP-, DOCKER, f2b-, ufw-) are iptables-specific and have no meaning in an nftables ruleset.
 - The classifier receives the raw diff dict and returns an annotated version. The orchestrator replaces the diff dict with the annotated version before writing the artifact.
 - The classifier **must not** modify `drift_detected` or `has_critical_changes`.
+
+### `firewall_inspector.py` ↔ `nftables_parser.py` / `nftables_diff.py`
+
+- The orchestrator calls `parse_nft_ruleset(text)` when `detect_framework()` returns `framework="nftables"`. It calls `parse_iptables_save(text, family)` for all other framework values. The two parse paths are mutually exclusive per run.
+- **Parse routing:** determined by the current framework detection result. nftables parse populates `parsed["nft"]`; iptables parse populates `parsed["ipv4"]` / `parsed["ipv6"]`.
+- **Diff routing:** determined by the presence of `"nft"` in the baseline snapshot's `rulesets` dict — not by `input_format` and not by the current framework detection result. If `baseline["rulesets"]["nft"]` exists (and is non-null), `nft_diff_rulesets()` is called; otherwise `iptables_diff.diff_rulesets()` is called.
+- **Framework mismatch guard:** the orchestrator checks `"nft" in baseline["rulesets"]` against `"nft" in parsed` before invoking either diff engine. A mismatch raises `ValueError` with a message identifying both the baseline framework and the current framework. The diff engine is never called on mismatched input. This approach correctly treats `"iptables-legacy"` and `"iptables-nft"` as the same diff-engine family — both produce `ipv4`/`ipv6` keys, not a `"nft"` key — and will never false-fire on a legacy→nft migration.
+- The probe script runs `nft --json list ruleset` in addition to `iptables-save` / `ip6tables-save`. The probe output section key for nftables output is `"nftables"` (accessed as `sections["nftables"]`). Both iptables and nftables sections are always collected by the probe — only the parse routing is gated on the framework detection result.
+- An empty or whitespace-only `"nftables"` section is treated as unavailable (same as `###UNAVAILABLE###`). `parse_nft_ruleset()` is never called on an empty string.
 
 ### `iptables_diff.py` ↔ `iptables_parser.py` (schema coupling only)
 
@@ -261,7 +307,8 @@ The tool executes shell commands against live VM infrastructure. Every command e
 
 | Omission | Principle violated if added | Detail |
 |----------|----------------------------|--------|
-| **nftables-native parsing** | Earn complexity | `nftables` uses a completely different ruleset model. A correct nftables parser is a separate module. Adding it to `iptables_parser.py` would merge two unrelated grammars into one file and break the parser's single responsibility. Deferred until there is a demonstrated operational need on a fleet using native nftables. |
+| **nftables text DSL parsing** | Earn complexity | The `nft list ruleset` text format is a recursive context-sensitive grammar not suited to stdlib-only parsing. `nft --json list ruleset` produces equivalent structured output and is the correct programmatic interface. The nftables-parser module consumes JSON only; text DSL parsing is not in scope. |
+| **nftables-parser in `iptables-parser/`** | Single responsibility | The two parsers have unrelated grammars, different identity models (handle vs field hash), and different diagnostics. Co-locating them would merge two independent modules. `nftables-parser/` is a sibling module to `iptables-parser/` under the same `netfilter-inspector/` umbrella. |
 | **Real-time streaming / watch mode** | Earn complexity | The tool models point-in-time snapshots and diffs. Streaming would require a persistent connection and an event model. The operational use case (change window bracket, post-incident capture) is entirely satisfied by discrete runs. |
 | **Rule interpretation / `--explain`** | Earn complexity | Explaining what a rule set means in natural language is a separate concern from parsing and diffing it. It requires different inputs (the parsed ruleset, possibly traffic context) and a different output contract. Designed separately in `explain-feature-design.md`; not part of the diff pipeline. |
 | **Direct cloud API integration in the parser** | Single responsibility | `iptables_parser.py` takes text. Making it aware of Azure, SSH, or any retrieval mechanism would destroy its standalone value and reusability. |

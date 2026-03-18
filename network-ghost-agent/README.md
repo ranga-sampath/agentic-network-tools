@@ -83,6 +83,26 @@ uv run --python 3.12 python ghost_agent.py \
 
 > **Note:** `run_pipe_meter` (use cases G–L) and `detect_config_drift` (use cases J–K) require a `--config` file. Individual flags are sufficient for use cases A–F only.
 
+### OS firewall inspection (`detect_config_drift`)
+
+The agent uses `detect_config_drift` to probe iptables/nftables state on the target VM. The config file governs whether to connect via the Azure control plane (`PROVIDER=azure`) or direct SSH (`PROVIDER=ssh`).
+
+```bash
+# Prompt the agent to capture a baseline
+"Take a firewall baseline snapshot of the destination VM"
+
+# Prompt the agent to detect drift
+"Compare the current firewall state against the baseline from session fw_20260318_095645"
+
+# Ask for an explanation of the current firewall state
+"Explain the current firewall rules on the destination VM"
+
+# Ask for an explanation of what changed
+"Explain what changed in the firewall since the baseline"
+```
+
+The `explain` mode delegates to the LLM explanation engine (`iptables_explain` or `nftables_explain`) and includes the explanation verbatim in the investigation report.
+
 ### Resume an interrupted session
 ```bash
 uv run --python 3.12 python ghost_agent.py --resume <session-id>
@@ -139,5 +159,9 @@ See `demo/README.md` for the full presenter guide and narration cues.
 
 ```bash
 cd network-ghost-agent
-uv run pytest tests/ -v
+uv run --python 3.12 python -m pytest tests/ -v
+# → 106 passed, 3 skipped, 2 xfailed
 ```
+
+Skipped tests (I5, I6, I7) require live Azure or Gemini API credentials.
+xFailed tests (L8, E6) are known unimplemented items tracked in the design doc.
