@@ -37,11 +37,15 @@ _HERE = Path(__file__).parent
 sys.path.insert(0, str(_HERE))
 # iptables_parser lives in the sibling iptables-parser/ module
 sys.path.insert(0, str(_HERE.parent / "iptables-parser"))
+# nftables_parser lives in the sibling nftables-parser/ module
+sys.path.insert(0, str(_HERE.parent / "nftables-parser"))
 
 from framework_detector import detect_framework
 from chain_classifier    import classify_diff
 from iptables_diff       import diff_rulesets
 from iptables_parser     import parse_iptables_save
+from nftables_parser     import parse_nft_ruleset
+from nftables_diff       import diff_rulesets as nft_diff_rulesets
 
 
 # ---------------------------------------------------------------------------
@@ -156,19 +160,26 @@ collect() {
   update-alternatives --query iptables 2>&1 || true
 
   printf '###SECTION:iptables_ipv4###\n'
-  if command -v iptables-legacy-save >/dev/null 2>&1; then
-    iptables-legacy-save -c 2>&1 || printf '###UNAVAILABLE###\n'
-  elif command -v iptables-save >/dev/null 2>&1; then
+  if command -v iptables-save >/dev/null 2>&1; then
     iptables-save -c 2>&1        || printf '###UNAVAILABLE###\n'
+  elif command -v iptables-legacy-save >/dev/null 2>&1; then
+    iptables-legacy-save -c 2>&1 || printf '###UNAVAILABLE###\n'
   else
     printf '###UNAVAILABLE###\n'
   fi
 
   printf '###SECTION:iptables_ipv6###\n'
-  if command -v ip6tables-legacy-save >/dev/null 2>&1; then
-    ip6tables-legacy-save -c 2>&1 || printf '###UNAVAILABLE###\n'
-  elif command -v ip6tables-save >/dev/null 2>&1; then
+  if command -v ip6tables-save >/dev/null 2>&1; then
     ip6tables-save -c 2>&1        || printf '###UNAVAILABLE###\n'
+  elif command -v ip6tables-legacy-save >/dev/null 2>&1; then
+    ip6tables-legacy-save -c 2>&1 || printf '###UNAVAILABLE###\n'
+  else
+    printf '###UNAVAILABLE###\n'
+  fi
+
+  printf '###SECTION:nftables###\n'
+  if command -v nft >/dev/null 2>&1; then
+    nft --json list ruleset 2>&1 || printf '###UNAVAILABLE###\n'
   else
     printf '###UNAVAILABLE###\n'
   fi
@@ -230,10 +241,10 @@ def _section_available(content: str) -> bool:
 @dataclass
 class InspectorConfig:
     ssh_user:             str
-    target_vm_ip:         str          # public IP (Case 1) or private IP (Case 2)
     ssh_key_path:         str          # SSH key for the target VM
     session_id:           str
     audit_dir:            str
+    target_vm_ip:         str = ""     # public IP (Case 1) or private IP (Case 2); not required for --provider azure
     vm_name:              str = ""     # Azure VM name; may be empty for --provider ssh
     resource_group:       str = ""     # Azure resource group; may be empty for --provider ssh
     provider:             str = "azure"        # "azure" | "ssh"
@@ -244,6 +255,13 @@ class InspectorConfig:
     compare_baseline:     str | None = None    # session_id of baseline to compare
     family:               str  = "ipv4"        # "ipv4" | "ipv6" | "both"
     parse_warnings:       list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.provider == "ssh" and not self.target_vm_ip:
+            raise ValueError(
+                "InspectorConfig.target_vm_ip is required for provider='ssh'. "
+                "Set it to the VM's IP address (public for direct, private for bastion)."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +300,7 @@ def run(config: InspectorConfig, shell: Any, provider: Any) -> dict:
     print(f"      Probe output: {remote_path} ({probe_info['probe_output_bytes']} bytes)")
 
     # Retrieve output file to local temp path
-    print(f"[2/5] Retrieving probe output from {config.target_vm_ip} ...")
+    print(f"[2/5] Retrieving probe output from {target_label} ...")
     local_tmp: str | None = None
     try:
         fd, local_tmp = tempfile.mkstemp(suffix=".txt", prefix="fw_local_")
@@ -307,7 +325,7 @@ def run(config: InspectorConfig, shell: Any, provider: Any) -> dict:
             ok = provider.cleanup_probe_output(remote_path=remote_path)
             if not ok:
                 config.parse_warnings.append(
-                    f"Remote cleanup of {remote_path} on {config.target_vm_ip} "
+                    f"Remote cleanup of {remote_path} on {target_label} "
                     f"failed. File will be reclaimed by tmpfiles/tmpwatch (~24h TTL)."
                 )
         except Exception as exc:
@@ -322,23 +340,39 @@ def run(config: InspectorConfig, shell: Any, provider: Any) -> dict:
     config.parse_warnings.extend(fw_result.get("parse_warnings", []))
     print(f"      Framework: {fw_result['framework']} (confidence: {fw_result['confidence']})")
 
-    # Parse iptables output
-    print(f"[4/5] Parsing iptables rules (family: {config.family}) ...")
+    # Parse ruleset — branch on detected framework
+    framework = fw_result["framework"]
     parsed = {}
-    families = ["ipv4", "ipv6"] if config.family == "both" else [config.family]
-    for fam in families:
-        section_key = f"iptables_{fam}"
-        content     = sections.get(section_key, "")
-        if not _section_available(content):
+    if framework == "nftables":
+        print(f"[4/5] Parsing nftables rules ...")
+        nft_content = sections.get("nftables", "")
+        if not _section_available(nft_content) or not nft_content.strip():
             config.parse_warnings.append(
-                f"iptables {fam} output unavailable on {target_label}."
+                f"nftables output unavailable on {target_label}."
             )
-            parsed[fam] = None
-            print(f"      [{fam}] unavailable")
+            parsed["nft"] = None
+            print(f"      [nft] unavailable")
         else:
-            parsed[fam] = parse_iptables_save(content, family=fam)
-            n_tables = len(parsed[fam].get("tables", {}))
-            print(f"      [{fam}] {n_tables} table(s) parsed")
+            parsed["nft"] = parse_nft_ruleset(nft_content)
+            n_tables = len(parsed["nft"].get("tables", {}))
+            print(f"      [nft] {n_tables} table(s) parsed")
+        families = ["nft"]
+    else:
+        print(f"[4/5] Parsing iptables rules (family: {config.family}) ...")
+        families = ["ipv4", "ipv6"] if config.family == "both" else [config.family]
+        for fam in families:
+            section_key = f"iptables_{fam}"
+            content     = sections.get(section_key, "")
+            if not _section_available(content):
+                config.parse_warnings.append(
+                    f"iptables {fam} output unavailable on {target_label}."
+                )
+                parsed[fam] = None
+                print(f"      [{fam}] unavailable")
+            else:
+                parsed[fam] = parse_iptables_save(content, family=fam)
+                n_tables = len(parsed[fam].get("tables", {}))
+                print(f"      [{fam}] {n_tables} table(s) parsed")
 
     if config.parse_warnings:
         for w in config.parse_warnings:
@@ -375,6 +409,24 @@ def run(config: InspectorConfig, shell: Any, provider: Any) -> dict:
     if config.compare_baseline:
         print(f"      Comparing against baseline: {config.compare_baseline}")
         baseline = load_snapshot(config.audit_dir, config.compare_baseline)
+
+        # Framework mismatch guard — prevents silent corruption of cross-framework diffs.
+        # Routing is determined by the presence of "nft" in the baseline rulesets, not by
+        # the framework string. This correctly treats "iptables-legacy" and "iptables-nft"
+        # as the same diff-engine family and never false-fires on a legacy→nft migration
+        # (both produce ipv4/ipv6 keys, not a "nft" key).
+        baseline_has_nft = "nft" in (baseline.get("rulesets") or {})
+        current_has_nft  = "nft" in parsed
+        if baseline_has_nft != current_has_nft:
+            baseline_fw = baseline.get("framework", "unknown")
+            raise ValueError(
+                f"Framework mismatch: baseline captured with '{baseline_fw}' "
+                f"({'nftables' if baseline_has_nft else 'iptables'}), "
+                f"current snapshot shows '{fw_result['framework']}' "
+                f"({'nftables' if current_has_nft else 'iptables'}). "
+                f"Cannot diff across firewall frameworks. Capture a new baseline."
+            )
+
         drift_reports: dict = {}
         for fam in families:
             b_ruleset = (baseline.get("rulesets") or {}).get(fam)
@@ -384,9 +436,11 @@ def run(config: InspectorConfig, shell: Any, provider: Any) -> dict:
                     "error": f"Cannot diff {fam}: one or both rulesets unavailable."
                 }
                 continue
-            diff   = diff_rulesets(b_ruleset, c_ruleset)
-            diff_c = classify_diff(diff)
-            drift_reports[fam] = diff_c
+            if current_has_nft:
+                drift_reports[fam] = nft_diff_rulesets(b_ruleset, c_ruleset)
+            else:
+                diff   = diff_rulesets(b_ruleset, c_ruleset)
+                drift_reports[fam] = classify_diff(diff)
 
         drift = {
             "diff_at":           snapshot_at,
@@ -582,6 +636,8 @@ def main(argv: list | None = None) -> None:
     def _req(key: str) -> bool:
         if effective_provider == "ssh" and key in ("vm_name", "resource_group"):
             return False
+        if effective_provider == "azure" and key == "target_vm_ip":
+            return False
         return key not in config_defaults
 
     parser = argparse.ArgumentParser(
@@ -701,7 +757,6 @@ def main(argv: list | None = None) -> None:
         "--family", choices=["ipv4", "ipv6", "both"], default="ipv4",
         help="Address family to inspect: ipv4 | ipv6 | both. (config: FAMILY, default: ipv4)",
     )
-
     parser.set_defaults(**config_defaults)
     args = parser.parse_args(argv)
 
@@ -736,8 +791,8 @@ def main(argv: list | None = None) -> None:
 
     config = InspectorConfig(
         ssh_user             = args.ssh_user,
-        target_vm_ip         = args.target_vm_ip,
         ssh_key_path         = args.target_ssh_key,
+        target_vm_ip         = args.target_vm_ip or "",
         session_id           = session_id,
         audit_dir            = args.audit_dir,
         vm_name              = args.vm_name,
@@ -757,9 +812,10 @@ def main(argv: list | None = None) -> None:
         provider = AzureProvider(
             shell                = shell,
             resource_group       = args.resource_group,
+            vm_name              = args.vm_name,
             subscription_id      = args.subscription_id,
             ssh_user             = args.ssh_user,
-            target_vm_ip         = args.target_vm_ip,
+            target_vm_ip         = args.target_vm_ip or "",
             target_ssh_key_path  = args.target_ssh_key,
             bastion_public_ip    = args.bastion_public_ip,
             bastion_ssh_key_path = args.bastion_ssh_key,

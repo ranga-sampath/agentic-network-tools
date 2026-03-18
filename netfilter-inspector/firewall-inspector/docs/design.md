@@ -131,9 +131,11 @@ COMMIT
 ###UNAVAILABLE###
 ```
 
-Section names: `framework_detection`, `iptables_ipv4`, `iptables_ipv6`.
+Section names: `framework_detection`, `iptables_ipv4`, `iptables_ipv6`, `nftables`.
 
-`###UNAVAILABLE###` is written when the corresponding `iptables-save` command fails or the binary is absent.
+`###UNAVAILABLE###` is written when the corresponding command fails or the binary is absent.
+
+The `nftables` section contains the output of `nft --json list ruleset`. It is always collected by the probe regardless of detected framework — the `nftables_parser` module is only invoked when the framework detector returns `"nftables"`.
 
 ### Snapshot artifact
 
@@ -156,6 +158,27 @@ Written to `{audit_dir}/{session_id}_snapshot.json`:
   }
 }
 ```
+
+For a nftables VM (`framework = "nftables"`), `rulesets` has a single `"nft"` key instead of `"ipv4"`/`"ipv6"`. The `family` field is stored as `"nft"` — `config.family` is ignored for nftables runs because nftables uses a single unified ruleset covering all address families:
+
+```json
+{
+  "snapshot_at":          "2026-03-15T09:00:00Z",
+  "session_id":           "fw_20260315_090000",
+  "vm_name":              "prod-vm-01",
+  "resource_group":       "my-rg",
+  "family":               "nft",
+  "framework":            "nftables",
+  "framework_confidence": "high",
+  "probe_script_sha256":  "abc123...",
+  "parse_warnings":       [],
+  "rulesets": {
+    "nft": { <parse_nft_ruleset() output> }
+  }
+}
+```
+
+Note: `snapshot["framework"]` (top-level, the detected firewall stack) is distinct from `snapshot["rulesets"]["nft"]["input_format"]` (inside the ruleset record, the parser's declared format `"nft-json"`). These are two different fields at two different nesting levels.
 
 `rulesets[fam]` is `null` when the section was unavailable on the target VM.
 
@@ -180,7 +203,19 @@ Written to `{audit_dir}/{session_id}_drift.json`:
 }
 ```
 
-When a family diff cannot run (one or both rulesets null): `"ipv6": {"error": "Cannot diff ipv6: one or both rulesets unavailable."}`.
+For a nftables VM, `drift_by_family` has a single `"nft"` key:
+
+```json
+{
+  "drift_by_family": {
+    "nft": { <nft_diff_rulesets() output> }
+  }
+}
+```
+
+`classify_diff()` is **not** called for nftables diffs — it is iptables-specific (KUBE-SEP-, DOCKER, f2b- chain patterns).
+
+When a family diff cannot run (one or both rulesets null): `{"error": "Cannot diff nft: one or both rulesets unavailable."}`.
 
 ### `detect_framework()` return
 
@@ -283,10 +318,17 @@ scp {ssh_opts} {proxy_command} \
 - `detect_framework(version_strings)` returns `{framework, confidence, parse_warnings}`
 - `parse_warnings` from detector appended to `config.parse_warnings`
 - Detection result stored in snapshot (`framework`, `framework_confidence`)
-- **Framework detection does not gate parsing** — iptables-save output is parsed regardless of detected framework. Detection is metadata for the human reviewer.
+- **Framework detection gates the parse branch** — `framework == "nftables"` routes to the nftables parse path; all other values route to the iptables parse path.
 
 ### Stage 6: Parse
 
+**nftables path** (`framework == "nftables"`):
+- `parse_nft_ruleset(nft_content)` called with the `nftables` probe section
+- Result stored as `parsed["nft"]`; `families = ["nft"]`
+- Section unavailability (including empty/whitespace-only): `parsed["nft"] = None`; warning emitted
+- `config.family` is ignored — nftables uses a unified ruleset covering all address families; the result is always stored under `"nft"` regardless of `FAMILY` setting
+
+**iptables path** (all other frameworks):
 - `parse_iptables_save(content, family=fam)` called for each requested family
 - `config.family = "both"` → two calls (ipv4, ipv6)
 - Unavailable sections skipped with warning; available sections parsed fully
@@ -303,7 +345,9 @@ scp {ssh_opts} {proxy_command} \
 
 - `load_snapshot(audit_dir, compare_baseline)` reads and verifies SHA-256 of baseline
 - `IntegrityError` → pipeline aborts with message; no diff is run
-- For each family: `diff_rulesets(baseline_ruleset, current_ruleset)` → `classify_diff()` → stored in `drift_reports[fam]`
+- **Framework mismatch guard**: checks `"nft" in baseline["rulesets"]` against `"nft" in parsed`. If they differ → `ValueError` with message naming both the baseline framework and current framework; pipeline aborts before any diff engine is called. This approach treats `"iptables-legacy"` and `"iptables-nft"` as the same diff-engine family (both produce `ipv4`/`ipv6` keys, never a `"nft"` key) and will never false-fire on a legacy→nft migration.
+- **Diff routing**: determined by `"nft" in parsed` (the current run's rulesets dict), not by the `framework` string and not by `input_format` inside the ruleset record. `"nft" in parsed` → `nft_diff_rulesets()` → stored in `drift_reports["nft"]`. `classify_diff()` is NOT called for nftables.
+- **iptables diff path** (`"nft" not in parsed`): `diff_rulesets(b, c)` → `classify_diff()` → stored in `drift_reports[fam]`
 - If either side is `None` → `{"error": "..."}` written for that family; other families still processed
 - Drift artifact written to `{session_id}_drift.json`
 - `_print_drift_summary()` outputs human-readable summary to stdout
@@ -410,8 +454,11 @@ Operator machine
 |-------|----------|---------------------|
 | Section unavailable (`###UNAVAILABLE###`) | Warning; `parsed[fam] = None` | Run continues; affected family skipped in diff |
 | `parse_iptables_save()` raises | Exception propagates | Run aborts |
+| `parse_nft_ruleset()` raises | Exception propagates | Run aborts |
 | `diff_rulesets()` raises `ValueError` | Exception propagates | Run aborts |
+| `nft_diff_rulesets()` raises `ValueError` | Exception propagates | Run aborts |
 | One side of diff is `None` | `{"error": "..."}` stored for that family | Other families still diffed; run continues |
+| Framework mismatch between baseline and current | `ValueError` with explanation | Run aborts; no diff written |
 | `IntegrityError` on baseline load | Message printed; run aborts | `SystemExit(1)` in `main()`; caller receives exception from `run()` |
 | `_write_artifact()` raises `OSError` | Exception propagates | Run aborts after diff completes; drift artifact not written |
 
@@ -425,6 +472,7 @@ Operator machine
 | `--is-baseline` and `--compare-baseline` both set | `parser.error()` | CLI exits 2 |
 | `validate_session_id()` raises | Error message + `SystemExit(1)` | CLI exits 1 |
 | `run()` raises `RuntimeError` | Error message + `SystemExit(1)` | CLI exits 1 |
+| `run()` raises `ValueError` from framework mismatch guard | Unhandled; Python traceback to stderr | CLI exits 1 with traceback. The traceback message is actionable ("Framework mismatch: ... Capture a new baseline.") — no clean-message wrapping is implemented; the raw traceback is the intended user-facing output for this error. |
 | `run()` raises `IntegrityError` | Unhandled; Python traceback to stderr | CLI exits 1 with traceback |
 | `run()` raises `ValueError` (from diff engine) | Unhandled; Python traceback to stderr | CLI exits 1 with traceback |
 | `run()` raises `OSError` (from artifact write) | Unhandled; Python traceback to stderr | CLI exits 1 with traceback |
@@ -439,8 +487,9 @@ The probe script is a static string constant `_PROBE_SCRIPT` embedded in `firewa
 - `set -euo pipefail` — exits on unguarded errors. Note: each `iptables-save` invocation is followed by `|| printf '###UNAVAILABLE###\n'`, so `set -e` does not cause exit on those command failures — the fallback runs instead. `set -e` catches unexpected failures in other parts of the script (e.g., `mktemp`, `chmod`).
 - Writes all output to a temp file created by `mktemp /tmp/fw_XXXXXX.txt`
 - `chmod 600` on temp file immediately after creation
-- Collects three sections in order: `framework_detection`, `iptables_ipv4`, `iptables_ipv6`
+- Collects four sections in order: `framework_detection`, `iptables_ipv4`, `iptables_ipv6`, `nftables`
 - Each `iptables-save` invocation uses `-c` (with counters)
+- The `nftables` section uses `nft --json list ruleset` — always collected; the parser only invokes `parse_nft_ruleset()` when the framework detector returns `"nftables"`
 - Unavailability: each section wrapped in `|| printf '###UNAVAILABLE###\n'` — one section failure does not abort the rest
 - `chown "$SSH_USER" "$OUT"`: transfers ownership so the SSH user can SCP the file. Non-fatal if it fails (target user may already be root).
 - Final two lines print `PROBE_OUTPUT_PATH=` and `PROBE_OUTPUT_BYTES=` for the orchestrator to parse
@@ -489,6 +538,12 @@ Shell commands are assembled as f-strings and executed via `subprocess.run(shell
 | `StrictHostKeyChecking=yes` and unknown host | SSH / SCP exit non-zero. Error message includes the host verification failure. Operator must run `ssh-keyscan` before first use. |
 | `BatchMode=yes` prevents password prompts | SSH exits if prompted for a password. Error is visible in the RuntimeError output. Operator must use key-based auth. |
 | `diff_rulesets()` compares different families | `ValueError` from diff engine — families are stored per-key in the snapshot; the orchestrator passes `baseline.rulesets[fam]` and `current.rulesets[fam]` — same family guaranteed. |
+| VM migrated from iptables to nftables since baseline was taken | Mismatch guard fires: `"nft" in baseline["rulesets"]` is False, `"nft" in parsed` is True → `ValueError` with explanation; pipeline aborts. Operator must take a new nftables baseline. |
+| `nftables` probe section absent or empty | `sections.get("nftables", "")` returns `""`. Empty string is treated as unavailable (same as `###UNAVAILABLE###`). `parsed["nft"] = None`; warning emitted. Snapshot saves with `rulesets: {"nft": null}`. |
+| `nftables` probe section present but minimal (`{"nftables":[]}`) | Valid JSON with no rules. `parse_nft_ruleset()` returns an empty tables dict. Not an error — a freshly provisioned VM with no nftables rules is a legitimate state. |
+| `nft --json` emits a warning line to stderr before the JSON body | The outer `collect > "$OUT" 2>&1` redirect will intermix the warning with the JSON output. `json.loads()` will fail with `JSONDecodeError` (not `###UNAVAILABLE###`). The exception propagates and aborts the pipeline. This is a known limitation of the shell redirection design shared with iptables-save sections; JSON format is more sensitive to prefix corruption than line-oriented text. |
+| Entire new table+chain added between baseline and compare | `nft_diff_rulesets()` classifies the event as `chains_added`, not `rules_added`. `chains_added` entries contain only chain metadata — `table`, `chain`, `hook`, `type`, `policy`, `rule_count` — but **not** individual rule details (`verdict`, `dst_port`, `protocol`, etc.) for rules that were created inside that new chain. **Example:** baseline has no `fw_test` table; compare state has `table inet fw_test { chain input { tcp dport 4444 drop } }`. The diff reports `chains_added: [{"table": "inet/fw_test", "chain": "input", "rule_count": 1}]` with `rules_added: []`. The `rule_count` confirms a rule exists but neither the `verdict` nor the `dst_port` is visible. `has_critical_changes` is computed from `rules_added` entries only, so it remains `false` even though a DROP rule was added. Contrast: if the chain already exists in the baseline and a rule is added to it, the rule appears in `rules_added` with full fields and `has_critical_changes` is set correctly. **Workaround:** ensure the chain exists in the baseline snapshot before testing rule-level drift; use `--is-baseline` after chain creation and before rule injection. |
+| `FAMILY=ipv4` or `FAMILY=both` on a nftables VM | `config.family` is ignored for nftables runs. The parse path unconditionally calls `parse_nft_ruleset()` and stores the result under `"nft"`. The snapshot records `"family": "nft"` regardless of the config value. |
 
 ---
 
@@ -526,7 +581,7 @@ Shell commands are assembled as f-strings and executed via `subprocess.run(shell
 | Omission | Rationale |
 |----------|-----------|
 | `--explain` flag | Designed separately in `explain-feature-design.md`. Requires a different output model and optionally an LLM invocation. Not part of the baseline/diff pipeline. |
-| nftables-native ruleset capture | `nft list ruleset` output format is incompatible with `iptables-save`. A separate probe section and parser module are required. Deferred. |
+| nftables chain classification | `classify_diff()` contains iptables-specific chain name patterns (KUBE-SEP-, DOCKER, f2b-, ufw-). These have no meaning for nftables. nftables diffs are returned as-is from `nft_diff_rulesets()` without severity annotation. Dedicated nftables chain classification is deferred. |
 | Automatic `known_hosts` population | `StrictHostKeyChecking=yes` is a deliberate security control. Auto-accepting host keys would silently disable MITM protection. Operator must run `ssh-keyscan` before first use. |
 | Windows Firewall / PowerShell | OS boundary. Different probe, different parser, different deployment model. |
 | Direct `iptables` command execution on target | The probe reads state via `iptables-save`. The tool never executes iptables rule modification commands on a target VM — that would make it a configuration management tool, not an inspector. |

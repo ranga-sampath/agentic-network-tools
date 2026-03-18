@@ -28,8 +28,10 @@ from firewall_inspector import (
     _section_available,
     _PROBE_SCRIPT,
     PROBE_SCRIPT_SHA256,
+    InspectorConfig,
+    run as _fi_run,
 )
-from providers import LocalShell, AzureProvider, SSHProvider, _parse_probe_response
+from providers import LocalShell, AzureProvider, SSHProvider, _parse_probe_response, _validate_remote_path
 
 
 # ===========================================================================
@@ -85,6 +87,28 @@ def test_sec_val_08_validation_fires_before_shell_execute(tmp_path):
     mock_provider.run_probe.assert_not_called()
 
 
+def test_sec_val_09_ssh_provider_requires_target_vm_ip(tmp_path):
+    """SEC-VAL-09: InspectorConfig with provider='ssh' and empty target_vm_ip raises ValueError at construction."""
+    with pytest.raises(ValueError, match="target_vm_ip is required"):
+        InspectorConfig(
+            ssh_user="ubuntu", ssh_key_path="/k",
+            session_id="fw_test01", audit_dir=str(tmp_path),
+            provider="ssh",
+            # target_vm_ip omitted — defaults to ""
+        )
+
+
+def test_sec_val_10_azure_provider_allows_empty_target_vm_ip(tmp_path):
+    """SEC-VAL-10: InspectorConfig with provider='azure' accepts empty target_vm_ip (uses vm_name instead)."""
+    config = InspectorConfig(
+        ssh_user="azureuser", ssh_key_path="/k",
+        session_id="fw_test01", audit_dir=str(tmp_path),
+        provider="azure", vm_name="tf-dest-vm", resource_group="rg",
+        # target_vm_ip omitted — must be allowed for azure
+    )
+    assert config.target_vm_ip == ""
+
+
 # ===========================================================================
 # SEC-SSH: StrictHostKeyChecking in all SCP/SSH commands
 # ===========================================================================
@@ -95,17 +119,33 @@ def _make_provider(
     target_ssh_key_path: str = "/home/user/.ssh/id_rsa",
     bastion_public_ip: str | None = "1.2.3.4",
     bastion_ssh_key_path: str | None = None,
-) -> AzureProvider:
+) -> SSHProvider:
     if shell is None:
         shell = MagicMock()
-    return AzureProvider(
+    return SSHProvider(
         shell                = shell,
-        resource_group       = "rg",
         ssh_user             = "azureuser",
         target_vm_ip         = target_vm_ip,
         target_ssh_key_path  = target_ssh_key_path,
         bastion_public_ip    = bastion_public_ip,
         bastion_ssh_key_path = bastion_ssh_key_path,
+    )
+
+
+def _make_azure_provider(
+    shell=None,
+    vm_name: str = "my-vm",
+    resource_group: str = "rg",
+    subscription_id: str | None = None,
+) -> AzureProvider:
+    if shell is None:
+        shell = MagicMock()
+    return AzureProvider(
+        shell          = shell,
+        resource_group = resource_group,
+        vm_name        = vm_name,
+        subscription_id = subscription_id,
+        ssh_user       = "azureuser",
     )
 
 
@@ -115,7 +155,7 @@ def test_sec_ssh_01_scp_contains_strict_host_key_checking(tmp_path):
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_provider(mock_shell)
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
 
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "StrictHostKeyChecking=yes" in cmd
@@ -127,7 +167,7 @@ def test_sec_ssh_02_scp_contains_proxy_command(tmp_path):
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_provider(mock_shell)
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
 
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "ProxyCommand" in cmd
@@ -140,7 +180,7 @@ def test_sec_ssh_03_cleanup_contains_strict_host_key_checking():
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_provider(mock_shell)
 
-    provider.cleanup_probe_output("/tmp/fw_abc.txt")
+    provider.cleanup_probe_output("/tmp/fw_AbCdEf.txt")
 
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "StrictHostKeyChecking=yes" in cmd
@@ -152,8 +192,8 @@ def test_sec_ssh_04_no_command_uses_strict_host_checking_no():
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_provider(mock_shell)
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", "/tmp/local.txt")
-    provider.cleanup_probe_output("/tmp/fw_abc.txt")
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", "/tmp/local.txt")
+    provider.cleanup_probe_output("/tmp/fw_AbCdEf.txt")
 
     for c in mock_shell.execute.call_args_list:
         cmd = c[0][0]["command"]
@@ -168,8 +208,8 @@ def test_sec_ssh_05_case1_no_proxy_command(tmp_path):
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_provider(mock_shell, target_vm_ip="20.1.2.3", bastion_public_ip=None)
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
-    provider.cleanup_probe_output("/tmp/fw_abc.txt")
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
+    provider.cleanup_probe_output("/tmp/fw_AbCdEf.txt")
 
     for c in mock_shell.execute.call_args_list:
         cmd = c[0][0]["command"]
@@ -189,7 +229,7 @@ def test_sec_ssh_06_case2b_different_keys_in_proxy_command(tmp_path):
         bastion_ssh_key_path = "/home/user/.ssh/bastion_key",
     )
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
 
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "ProxyCommand" in cmd
@@ -221,12 +261,122 @@ def test_sec_ssh_07_case2a_same_key_defaults(tmp_path):
         bastion_ssh_key_path = None,  # must default to target key
     )
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
 
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "ProxyCommand" in cmd
     # Same key path appears in both outer -i and inside ProxyCommand
     assert cmd.count("/home/user/.ssh/id_rsa") >= 2
+
+
+# ===========================================================================
+# SEC-AZ: AzureProvider retrieve/cleanup use az vm run-command (no SCP/SSH)
+# ===========================================================================
+
+_AZ_RETRIEVE_RESPONSE = json.dumps({
+    "value": [{"message": "[stdout]\nline1\nline2\n[stderr]\n"}]
+})
+
+
+def test_sec_az_01_retrieve_uses_run_command(tmp_path):
+    """SEC-AZ-01: AzureProvider.retrieve_probe_output issues az vm run-command (not scp)."""
+    mock_shell = MagicMock()
+    mock_shell.execute.return_value = {
+        "status": "success", "output": _AZ_RETRIEVE_RESPONSE, "exit_code": 0, "audit_id": "a1",
+    }
+    provider = _make_azure_provider(mock_shell)
+    out = tmp_path / "out.txt"
+
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(out))
+
+    cmd = mock_shell.execute.call_args[0][0]["command"]
+    assert "az vm run-command invoke" in cmd
+    assert "RunShellScript" in cmd
+    assert "cat /tmp/fw_AbCdEf.txt" in cmd
+    assert "scp" not in cmd
+
+
+def test_sec_az_02_retrieve_writes_stdout_content(tmp_path):
+    """SEC-AZ-02: retrieve_probe_output writes the extracted stdout to local_path."""
+    mock_shell = MagicMock()
+    mock_shell.execute.return_value = {
+        "status": "success", "output": _AZ_RETRIEVE_RESPONSE, "exit_code": 0, "audit_id": "a1",
+    }
+    provider = _make_azure_provider(mock_shell)
+    out = tmp_path / "out.txt"
+
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(out))
+
+    assert out.read_text() == "line1\nline2\n"
+
+
+def test_sec_az_03_retrieve_includes_vm_name_and_rg():
+    """SEC-AZ-03: retrieve_probe_output command includes vm_name and resource_group."""
+    mock_shell = MagicMock()
+    mock_shell.execute.return_value = {
+        "status": "success", "output": _AZ_RETRIEVE_RESPONSE, "exit_code": 0, "audit_id": "a1",
+    }
+    provider = _make_azure_provider(mock_shell, vm_name="tf-dest-vm", resource_group="nw-forensics-rg")
+
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", "/tmp/local.txt")
+
+    cmd = mock_shell.execute.call_args[0][0]["command"]
+    assert "tf-dest-vm" in cmd
+    assert "nw-forensics-rg" in cmd
+
+
+def test_sec_az_04_cleanup_uses_run_command():
+    """SEC-AZ-04: AzureProvider.cleanup_probe_output issues az vm run-command (not ssh)."""
+    mock_shell = MagicMock()
+    mock_shell.execute.return_value = {
+        "status": "success", "output": "{}", "exit_code": 0, "audit_id": "a1",
+    }
+    provider = _make_azure_provider(mock_shell)
+
+    result = provider.cleanup_probe_output("/tmp/fw_AbCdEf.txt")
+
+    cmd = mock_shell.execute.call_args[0][0]["command"]
+    assert "az vm run-command invoke" in cmd
+    assert "RunShellScript" in cmd
+    assert "rm -f /tmp/fw_AbCdEf.txt" in cmd
+    assert "ssh" not in cmd
+    assert result is True
+
+
+def test_sec_az_05_retrieve_with_subscription_id():
+    """SEC-AZ-05: retrieve_probe_output includes --subscription when subscription_id is set."""
+    mock_shell = MagicMock()
+    mock_shell.execute.return_value = {
+        "status": "success", "output": _AZ_RETRIEVE_RESPONSE, "exit_code": 0, "audit_id": "a1",
+    }
+    provider = _make_azure_provider(mock_shell, subscription_id="sub-1234")
+
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", "/tmp/local.txt")
+
+    cmd = mock_shell.execute.call_args[0][0]["command"]
+    assert "--subscription sub-1234" in cmd
+
+
+def test_sec_az_06_invalid_remote_path_raises_before_shell_execute():
+    """SEC-AZ-06: retrieve_probe_output raises ValueError for non-mktemp paths — no shell execute called."""
+    mock_shell = MagicMock()
+    provider = _make_azure_provider(mock_shell)
+
+    with pytest.raises(ValueError, match="Unexpected remote_path"):
+        provider.retrieve_probe_output("/etc/passwd", "/tmp/local.txt")
+
+    mock_shell.execute.assert_not_called()
+
+
+def test_sec_az_07_invalid_remote_path_cleanup_raises_before_shell_execute():
+    """SEC-AZ-07: cleanup_probe_output raises ValueError for non-mktemp paths — no shell execute called."""
+    mock_shell = MagicMock()
+    provider = _make_azure_provider(mock_shell)
+
+    with pytest.raises(ValueError, match="Unexpected remote_path"):
+        provider.cleanup_probe_output("/etc/cron.d/evil")
+
+    mock_shell.execute.assert_not_called()
 
 
 # ===========================================================================
@@ -574,7 +724,7 @@ def test_sec_ssh_08_ssh_provider_run_probe_command_format():
     mock_shell = MagicMock()
     mock_shell.execute.return_value = {
         "status": "success",
-        "output": "PROBE_OUTPUT_PATH=/tmp/fw_abc.txt\nPROBE_OUTPUT_BYTES=1024\n",
+        "output": "PROBE_OUTPUT_PATH=/tmp/fw_AbCdEf.txt\nPROBE_OUTPUT_BYTES=1024\n",
         "exit_code": 0,
         "audit_id": "a1",
     }
@@ -590,7 +740,7 @@ def test_sec_ssh_08_ssh_provider_run_probe_command_format():
     assert "192.168.64.5" in cmd
     # stdin redirect must be present — this is how the probe script reaches the remote bash
     assert "<" in cmd
-    assert result["probe_output_path"] == "/tmp/fw_abc.txt"
+    assert result["probe_output_path"] == "/tmp/fw_AbCdEf.txt"
     assert result["probe_output_bytes"] == 1024
 
 
@@ -625,7 +775,7 @@ def test_sec_ssh_11_ssh_provider_retrieve_uses_strict_host_key_checking(tmp_path
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_ssh_provider(mock_shell)
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
 
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "StrictHostKeyChecking=yes" in cmd
@@ -638,8 +788,8 @@ def test_sec_ssh_12_ssh_provider_case1_no_proxy_command(tmp_path):
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_ssh_provider(mock_shell, bastion_public_ip=None)
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
-    provider.cleanup_probe_output("/tmp/fw_abc.txt")
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
+    provider.cleanup_probe_output("/tmp/fw_AbCdEf.txt")
 
     for c in mock_shell.execute.call_args_list:
         cmd = c[0][0]["command"]
@@ -653,7 +803,7 @@ def test_sec_ssh_13_ssh_provider_case2_proxy_command_present(tmp_path):
     mock_shell.execute.return_value = {"status": "success", "output": "", "exit_code": 0, "audit_id": "a1"}
     provider = _make_ssh_provider(mock_shell, bastion_public_ip="10.0.0.1")
 
-    provider.retrieve_probe_output("/tmp/fw_abc.txt", str(tmp_path / "out.txt"))
+    provider.retrieve_probe_output("/tmp/fw_AbCdEf.txt", str(tmp_path / "out.txt"))
 
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "ProxyCommand" in cmd
@@ -685,7 +835,7 @@ def test_sec_ssh_14_ssh_provider_run_probe_strict_host_key_checking():
     mock_shell = MagicMock()
     mock_shell.execute.return_value = {
         "status": "success",
-        "output": "PROBE_OUTPUT_PATH=/tmp/fw_abc.txt\nPROBE_OUTPUT_BYTES=512\n",
+        "output": "PROBE_OUTPUT_PATH=/tmp/fw_AbCdEf.txt\nPROBE_OUTPUT_BYTES=512\n",
         "exit_code": 0,
         "audit_id": "a1",
     }
@@ -696,3 +846,291 @@ def test_sec_ssh_14_ssh_provider_run_probe_strict_host_key_checking():
     cmd = mock_shell.execute.call_args[0][0]["command"]
     assert "StrictHostKeyChecking=yes" in cmd
     assert "StrictHostKeyChecking=no" not in cmd
+
+
+# ===========================================================================
+# FW-NF: nftables framework integration
+# ===========================================================================
+#
+# Mock boundary (per FD-12): detect_framework() must always be mocked in unit
+# tests. A live call against nft-only probe output returns "unknown", not
+# "nftables". All diff functions (nft_diff_rulesets, diff_rulesets,
+# classify_diff) and parser functions (parse_nft_ruleset, parse_iptables_save)
+# are also mocked so tests exercise routing logic only — not parser internals.
+# ---------------------------------------------------------------------------
+
+# ─── Shared fixtures ────────────────────────────────────────────────────────
+
+_MINIMAL_NFT_JSON = json.dumps({
+    "nftables": [
+        {"metainfo": {"version": "1.0.2", "release_name": "Lester Gooch",
+                      "json_schema_version": 1}},
+    ]
+})
+
+# Probe text from a native-nftables VM (iptables sections unavailable)
+_NFT_PROBE_TEXT = (
+    "###SECTION:framework_detection###\n"
+    "nftables v1.0.2 (Lester Gooch)\n"
+    "###SECTION:iptables_ipv4###\n"
+    "###UNAVAILABLE###\n"
+    "###SECTION:iptables_ipv6###\n"
+    "###UNAVAILABLE###\n"
+    "###SECTION:nftables###\n"
+    + _MINIMAL_NFT_JSON + "\n"
+)
+
+# Probe text from an iptables-legacy VM (nftables section unavailable)
+_IPT_PROBE_TEXT = (
+    "###SECTION:framework_detection###\n"
+    "iptables v1.8.7 (legacy)\n"
+    "###SECTION:iptables_ipv4###\n"
+    "# Generated by iptables-save\n*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
+    "###SECTION:iptables_ipv6###\n"
+    "###UNAVAILABLE###\n"
+    "###SECTION:nftables###\n"
+    "###UNAVAILABLE###\n"
+)
+
+# Probe text where nftables section is present but blank (not ###UNAVAILABLE###)
+# This is the "outer redirect" known limitation — empty string triggers the
+# not nft_content.strip() guard rather than _section_available().
+_NFT_EMPTY_SECTION_PROBE_TEXT = (
+    "###SECTION:framework_detection###\n"
+    "nftables v1.0.2 (Lester Gooch)\n"
+    "###SECTION:iptables_ipv4###\n"
+    "###UNAVAILABLE###\n"
+    "###SECTION:iptables_ipv6###\n"
+    "###UNAVAILABLE###\n"
+    "###SECTION:nftables###\n"
+    "\n"
+)
+
+_PARSED_NFT_STUB = {
+    "tables": {}, "chains": {}, "rules": [],
+    "sets": {}, "maps": {},
+    "input_format": "nft_json",
+    "schema_version": 1,
+    "nft_version": "1.0.2",
+    "captured_at": "2026-03-16T00:00:00Z",
+    "warnings": [],
+}
+
+_PARSED_IPT_STUB = {
+    "tables": {"filter": {"policy": "ACCEPT", "chains": {}}},
+    "warnings": [],
+}
+
+_NFT_DIFF_STUB = {
+    "rules_added": [], "rules_removed": [],
+    "chains_added": [], "chains_removed": [],
+    "policy_changes": [],
+    "drift_detected": False,
+    "has_critical_changes": False,
+}
+
+_IPT_DIFF_STUB = {
+    "rules_added": [], "rules_removed": [],
+    "chains_added": [], "chains_removed": [],
+    "policy_changes": [],
+    "drift_detected": False,
+}
+
+_CLASSIFIED_DIFF_STUB = {**_IPT_DIFF_STUB, "has_critical_changes": False}
+
+_NFT_FW_DETECT = {"framework": "nftables", "confidence": "high", "parse_warnings": []}
+_IPT_FW_DETECT = {"framework": "iptables", "confidence": "high", "parse_warnings": []}
+
+
+def _probe_provider(probe_text: str) -> MagicMock:
+    """Mock provider that writes probe_text to local_path during retrieve_probe_output."""
+    p = MagicMock()
+    p.run_probe.return_value = {
+        "probe_output_path": "/tmp/fw_nft_test.txt",
+        "probe_output_bytes": len(probe_text),
+    }
+
+    def _retrieve(remote_path, local_path):
+        Path(local_path).write_text(probe_text, encoding="utf-8")
+
+    p.retrieve_probe_output.side_effect = _retrieve
+    p.cleanup_probe_output.return_value = True
+    return p
+
+
+def _nft_config(tmp_path, **kw) -> InspectorConfig:
+    defaults = dict(
+        ssh_user="ubuntu", target_vm_ip="10.0.0.1", ssh_key_path="/tmp/key",
+        session_id="fw_nft_test", audit_dir=str(tmp_path),
+        vm_name="test-vm", resource_group="rg",
+    )
+    defaults.update(kw)
+    return InspectorConfig(**defaults)
+
+
+# ─── Tests ──────────────────────────────────────────────────────────────────
+
+def test_fw_nf01_parse_nft_ruleset_called_once_for_nftables(tmp_path):
+    """FW-NF01: detect_framework="nftables" → parse_nft_ruleset() call count == 1; "ipv4" absent from rulesets."""
+    with patch("firewall_inspector.detect_framework", return_value=_NFT_FW_DETECT), \
+         patch("firewall_inspector.parse_nft_ruleset", return_value=_PARSED_NFT_STUB) as mock_parse_nft:
+        config = _nft_config(tmp_path, is_baseline=True)
+        result = _fi_run(config, MagicMock(), _probe_provider(_NFT_PROBE_TEXT))
+
+    assert mock_parse_nft.call_count == 1, "parse_nft_ruleset must be called exactly once for nftables"
+    assert "ipv4" not in result["snapshot"]["rulesets"], "'ipv4' key must not appear in nftables rulesets"
+    assert "nft" in result["snapshot"]["rulesets"]
+
+
+def test_fw_nf02_snapshot_rulesets_has_nft_key_regardless_of_family_config(tmp_path):
+    """FW-NF02: nftables snapshot stores rulesets["nft"]; config.family value does not override the key.
+
+    config.family is ignored for nftables runs — the parser always produces
+    a single "nft" key, regardless of whether config.family is "ipv4" or "both".
+    """
+    with patch("firewall_inspector.detect_framework", return_value=_NFT_FW_DETECT), \
+         patch("firewall_inspector.parse_nft_ruleset", return_value=_PARSED_NFT_STUB):
+        config = _nft_config(tmp_path, is_baseline=True, family="ipv4")
+        result = _fi_run(config, MagicMock(), _probe_provider(_NFT_PROBE_TEXT))
+
+    rulesets = result["snapshot"]["rulesets"]
+    assert "nft" in rulesets, "rulesets must have 'nft' key for nftables framework"
+    assert "ipv4" not in rulesets, "iptables keys must not appear in nftables snapshot"
+    assert "ipv6" not in rulesets
+
+
+def test_fw_nf03_parse_nft_ruleset_not_called_for_iptables(tmp_path):
+    """FW-NF03: detect_framework="iptables" → parse_nft_ruleset() call count == 0."""
+    with patch("firewall_inspector.detect_framework", return_value=_IPT_FW_DETECT), \
+         patch("firewall_inspector.parse_iptables_save", return_value=_PARSED_IPT_STUB), \
+         patch("firewall_inspector.parse_nft_ruleset") as mock_parse_nft:
+        config = _nft_config(tmp_path, is_baseline=True)
+        _fi_run(config, MagicMock(), _probe_provider(_IPT_PROBE_TEXT))
+
+    assert mock_parse_nft.call_count == 0, "parse_nft_ruleset must NOT be called for iptables framework"
+
+
+def test_fw_nf04_nftables_diff_routes_to_nft_diff_rulesets_not_classify_diff(tmp_path):
+    """FW-NF04: nftables diff path → nft_diff_rulesets() call count == 1; classify_diff() call count == 0.
+
+    classify_diff() is iptables-only (uses KUBE-SEP-, DOCKER, f2b-, ufw- chain patterns).
+    Calling it on nftables diffs would corrupt drift reports with spurious severity annotations.
+    """
+    baseline_snap = {
+        "snapshot_at": "2026-03-16T00:00:00Z",
+        "session_id": "fw_nft_base",
+        "framework": "nftables",
+        "family": "ipv4",
+        "rulesets": {"nft": _PARSED_NFT_STUB},
+    }
+    save_snapshot(baseline_snap, str(tmp_path), "fw_nft_base")
+
+    with patch("firewall_inspector.detect_framework", return_value=_NFT_FW_DETECT), \
+         patch("firewall_inspector.parse_nft_ruleset", return_value=_PARSED_NFT_STUB), \
+         patch("firewall_inspector.nft_diff_rulesets", return_value=_NFT_DIFF_STUB) as mock_nft_diff, \
+         patch("firewall_inspector.classify_diff") as mock_classify:
+        config = _nft_config(tmp_path, compare_baseline="fw_nft_base")
+        _fi_run(config, MagicMock(), _probe_provider(_NFT_PROBE_TEXT))
+
+    assert mock_nft_diff.call_count == 1, "nft_diff_rulesets must be called once for nftables diff"
+    assert mock_classify.call_count == 0, "classify_diff must NOT be called for nftables diff"
+
+
+def test_fw_nf05_iptables_diff_routes_to_diff_rulesets_and_classify_diff(tmp_path):
+    """FW-NF05: iptables diff path → diff_rulesets() == 1, classify_diff() == 1; nft_diff_rulesets() == 0."""
+    baseline_snap = {
+        "snapshot_at": "2026-03-16T00:00:00Z",
+        "session_id": "fw_ipt_base",
+        "framework": "iptables",
+        "family": "ipv4",
+        "rulesets": {"ipv4": _PARSED_IPT_STUB},
+    }
+    save_snapshot(baseline_snap, str(tmp_path), "fw_ipt_base")
+
+    with patch("firewall_inspector.detect_framework", return_value=_IPT_FW_DETECT), \
+         patch("firewall_inspector.parse_iptables_save", return_value=_PARSED_IPT_STUB), \
+         patch("firewall_inspector.diff_rulesets", return_value=_IPT_DIFF_STUB) as mock_diff, \
+         patch("firewall_inspector.classify_diff", return_value=_CLASSIFIED_DIFF_STUB) as mock_classify, \
+         patch("firewall_inspector.nft_diff_rulesets") as mock_nft_diff:
+        config = _nft_config(tmp_path, compare_baseline="fw_ipt_base")
+        _fi_run(config, MagicMock(), _probe_provider(_IPT_PROBE_TEXT))
+
+    assert mock_diff.call_count == 1, "diff_rulesets must be called once for iptables diff"
+    assert mock_classify.call_count == 1, "classify_diff must be called once for iptables diff"
+    assert mock_nft_diff.call_count == 0, "nft_diff_rulesets must NOT be called for iptables diff"
+
+
+def test_fw_nf06_framework_mismatch_raises_value_error(tmp_path):
+    """FW-NF06: baseline=iptables (ipv4 key), current=nftables (nft key) → ValueError; nft_diff_rulesets() == 0.
+
+    The mismatch guard compares "nft" key presence in baseline.rulesets vs current parsed dict.
+    This correctly fires on a true iptables↔nftables crossover while treating iptables-legacy
+    and iptables-nft (both produce ipv4/ipv6 keys) as the same family.
+    """
+    baseline_snap = {
+        "snapshot_at": "2026-03-16T00:00:00Z",
+        "session_id": "fw_ipt_base",
+        "framework": "iptables",
+        "family": "ipv4",
+        "rulesets": {"ipv4": _PARSED_IPT_STUB},
+    }
+    save_snapshot(baseline_snap, str(tmp_path), "fw_ipt_base")
+
+    with patch("firewall_inspector.detect_framework", return_value=_NFT_FW_DETECT), \
+         patch("firewall_inspector.parse_nft_ruleset", return_value=_PARSED_NFT_STUB), \
+         patch("firewall_inspector.nft_diff_rulesets") as mock_nft_diff:
+        config = _nft_config(tmp_path, compare_baseline="fw_ipt_base")
+        with pytest.raises(ValueError, match="Framework mismatch"):
+            _fi_run(config, MagicMock(), _probe_provider(_NFT_PROBE_TEXT))
+
+    assert mock_nft_diff.call_count == 0, "nft_diff_rulesets must not be called when mismatch guard fires"
+
+
+def test_fw_nf07_unavailable_nftables_section_sets_parsed_nft_none(tmp_path):
+    """FW-NF07: ###UNAVAILABLE### nftables section → parsed["nft"] is None; parse_nft_ruleset() call count == 0."""
+    unavail_probe = (
+        "###SECTION:framework_detection###\n"
+        "nftables v1.0.2 (Lester Gooch)\n"
+        "###SECTION:iptables_ipv4###\n"
+        "###UNAVAILABLE###\n"
+        "###SECTION:iptables_ipv6###\n"
+        "###UNAVAILABLE###\n"
+        "###SECTION:nftables###\n"
+        "###UNAVAILABLE###\n"
+    )
+    with patch("firewall_inspector.detect_framework", return_value=_NFT_FW_DETECT), \
+         patch("firewall_inspector.parse_nft_ruleset") as mock_parse_nft:
+        config = _nft_config(tmp_path, is_baseline=True)
+        result = _fi_run(config, MagicMock(), _probe_provider(unavail_probe))
+
+    assert mock_parse_nft.call_count == 0, "parse_nft_ruleset must NOT be called when section is ###UNAVAILABLE###"
+    assert result["snapshot"]["rulesets"]["nft"] is None
+
+
+def test_fw_nf07b_empty_nftables_section_sets_parsed_nft_none(tmp_path):
+    """FW-NF07b: Empty (blank) nftables section → parsed["nft"] is None; parse_nft_ruleset() call count == 0.
+
+    _section_available("") returns True (only checks for ###UNAVAILABLE###).
+    The additional `not nft_content.strip()` guard is what catches this case
+    and prevents an empty string being fed to parse_nft_ruleset() causing JSONDecodeError.
+    """
+    with patch("firewall_inspector.detect_framework", return_value=_NFT_FW_DETECT), \
+         patch("firewall_inspector.parse_nft_ruleset") as mock_parse_nft:
+        config = _nft_config(tmp_path, is_baseline=True)
+        result = _fi_run(config, MagicMock(), _probe_provider(_NFT_EMPTY_SECTION_PROBE_TEXT))
+
+    assert mock_parse_nft.call_count == 0, (
+        "parse_nft_ruleset must NOT be called when section content is empty — "
+        "empty string fed to json.loads() raises JSONDecodeError"
+    )
+    assert result["snapshot"]["rulesets"]["nft"] is None
+
+
+def test_fw_nf08_probe_script_contains_nftables_section():
+    """FW-NF08: _PROBE_SCRIPT includes the nftables section marker and the nft --json list ruleset command."""
+    assert "###SECTION:nftables###" in _PROBE_SCRIPT, (
+        "Probe script must include '###SECTION:nftables###' marker"
+    )
+    assert "nft --json list ruleset" in _PROBE_SCRIPT, (
+        "Probe script must include 'nft --json list ruleset' command"
+    )

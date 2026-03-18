@@ -6,7 +6,7 @@ Coverage:
   FD-05 to FD-08  iptables --version backend tag detection
   FD-09 to FD-10  legacy fallback when no backend tag
   FD-11           iptables-legacy only (no iptables main)
-  FD-12           nftables-native only → unknown (MVP)
+  FD-12           nftables-native only → nftables (Module 3)
   FD-13 to FD-14  empty / missing version strings → unknown
   FD-15           nft_available flag set correctly
   FD-16           parse_warnings populated when expected
@@ -143,17 +143,17 @@ def test_fd11_legacy_binary_only():
 
 
 # ---------------------------------------------------------------------------
-# nftables-native (unsupported in MVP)
+# nftables-native (Module 3 — implemented)
 # ---------------------------------------------------------------------------
 
-def test_fd12_nft_only_returns_unknown():
-    """Only nft present, no iptables → framework='unknown' with warning (MVP limitation)."""
+def test_fd12_nft_only_returns_nftables():
+    """Only nft present, no iptables → framework='nftables', high confidence."""
     r = detect_framework(_vs(nft=NFT_V))
-    assert r["framework"]      == "unknown"
+    assert r["framework"]      == "nftables"
     assert r["iptables_cmd"]   is None
     assert r["nft_available"]  is True
-    assert len(r["parse_warnings"]) >= 1
-    assert "nftables" in r["parse_warnings"][0].lower()
+    assert r["confidence"]     == "high"
+    assert r["parse_warnings"] == []
 
 
 # ---------------------------------------------------------------------------

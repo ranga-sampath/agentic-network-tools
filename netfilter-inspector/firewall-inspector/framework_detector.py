@@ -100,8 +100,8 @@ def detect_framework(version_strings: dict[str, Any]) -> dict:
             "parse_warnings":  list[str],
         }
 
-    MVP note: "nftables-native" and "mixed" both return framework="unknown"
-    with a parse_warning. Full nftables support is Module 3 (deferred post-MVP).
+    "mixed" returns framework="unknown" with a parse_warning.
+    "nftables-native" now returns framework="nftables" (Module 3 implemented).
     """
     iptables_vs   = str(version_strings.get("iptables")            or "").strip()
     iptables_leg  = str(version_strings.get("iptables_legacy")     or "").strip()
@@ -189,18 +189,15 @@ def detect_framework(version_strings: dict[str, Any]) -> dict:
         }
 
     # ---------------------------------------------------------------------------
-    # Step 5: only nft present — nftables-native (unsupported in MVP)
+    # ---------------------------------------------------------------------------
+    # Step 5: only nft present — nftables-native
     # ---------------------------------------------------------------------------
     if nft_present and not iptables_vs and not iptables_leg:
-        warnings.append(
-            "Only nftables detected. nftables-native support is deferred post-MVP. "
-            "iptables-save output will be empty or unavailable."
-        )
         return {
-            "framework":      "unknown",
+            "framework":      "nftables",
             "iptables_cmd":   None,
             "nft_available":  True,
-            "confidence":     "low",
+            "confidence":     "high",
             "parse_warnings": warnings,
         }
 

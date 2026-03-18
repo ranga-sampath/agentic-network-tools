@@ -24,7 +24,6 @@
 |------|--------|
 | Ghost Agent / `SafeExecShell` end-to-end | HITL decision loop requires live Ghost Agent integration; not a unit test concern |
 | `AzureProvider.run_probe()` live path | Requires live `az` CLI and a running VM — 2 tests currently skipped |
-| nftables-native parsing | Intentional omission; `framework_detector` identifies it, parsing is deferred |
 | `--family both` orchestrator flow | Covered by Multipass end-to-end validation; not by unit tests |
 | `--explain` feature | Not yet built (post-MVP) |
 
@@ -101,8 +100,8 @@ The probe script is a static constant. Any runtime assembly from user-controlled
 | SEC-PROBE-01 | `test_sec_probe_01_probe_script_is_string_constant` | `_PROBE_SCRIPT` type | `isinstance(_PROBE_SCRIPT, str)` — not assembled at runtime |
 | SEC-PROBE-02 | `test_sec_probe_02_probe_script_contains_mktemp` | Temp file creation | Script contains `mktemp` |
 | SEC-PROBE-03 | `test_sec_probe_03_probe_script_contains_chmod_600` | Output file permissions | Script contains `chmod 600` |
-| SEC-PROBE-04 | `test_sec_probe_04_probe_always_collects_both_families` | IPv4 and IPv6 always captured | Script contains both `iptables-save` and `ip6tables-save` invocations regardless of `FAMILY` config |
-| SEC-PROBE-05 | `test_sec_probe_05_probe_sha256_matches_script` | Script content stability | SHA-256 of `_PROBE_SCRIPT` matches expected hash — detects accidental modification |
+| SEC-PROBE-04 | `test_sec_probe_04_probe_always_collects_both_families` | IPv4 and IPv6 iptables sections always captured | Script contains both `iptables-save` and `ip6tables-save` invocations regardless of `FAMILY` config. Note: this test covers iptables sections only — nftables section presence is verified by FW-NF08. |
+| SEC-PROBE-05 | `test_sec_probe_05_probe_sha256_matches_script` | Script content stability | SHA-256 of `_PROBE_SCRIPT` matches expected hash — detects accidental modification. **Note:** The nftables section was added to the probe script; the expected hash constant in this test must be recalculated whenever the probe script is finalized. See Known Gaps — SEC-PROBE-05 hash update. |
 | SEC-PROBE-06 | `test_sec_probe_06_probe_chowns_output_to_ssh_user` | Output file ownership | Script contains `chown $2` (SSH user passed as positional arg, not interpolated) |
 
 **Key invariant:** SEC-PROBE-05 is a content-stability guard. If the probe script is modified, this test fails explicitly — preventing silent changes to a security-sensitive constant.
@@ -247,6 +246,34 @@ Core inspector pipeline functions: probe output parsing, snapshot I/O, shell exe
 
 ---
 
+### 3.10 nftables Integration (`test_inspector.py` — FW-NF)
+
+Verify that the parse and diff branches correctly route nftables input through `parse_nft_ruleset()` and `nft_diff_rulesets()`, and that framework mismatches are rejected before any diff is attempted.
+
+**Mock boundary for all FW-NF tests:** `detect_framework()` is mocked to return a controlled `{framework, confidence, parse_warnings}` dict. It is not called live. This is required because `detect_framework()` returns `"unknown"` (not `"nftables"`) for a probe section containing only `nft --version` output (see FD-12); a live call would never produce `framework="nftables"` without a full real probe section. All other module boundaries (`parse_nft_ruleset`, `nft_diff_rulesets`, `diff_rulesets`, `classify_diff`) are also mocked to control call sequencing and avoid parser-level fixture requirements for integration boundary tests.
+
+**Fixture strategy for FW-NF04/FW-NF05:** These tests verify call sequencing across `firewall_inspector.py`, `nftables_diff.py`, and `chain_classifier.py`. They use synthetic dicts conforming to the minimal snapshot schema (`{"rulesets": {"nft": {}}}` for nftables; `{"rulesets": {"ipv4": {}}}` for iptables) rather than real `parse_nft_ruleset()` output. The mocked diff functions return a minimal `{"drift_detected": False, "has_critical_changes": False, "summary": {}, "changes": {}}` dict. Test environment remains "no network access required."
+
+| Test ID | Test function | Scenario | Expected outcome |
+|---------|--------------|----------|-----------------|
+| FW-NF01 | `test_fw_nf01_nftables_section_parsed_when_framework_nftables` | Probe output with `###SECTION:nftables###` containing valid JSON; `detect_framework()` mocked to return `framework="nftables"` | `parse_nft_ruleset()` called once; `parsed["nft"]` populated; `parsed["ipv4"]` and `parsed["ipv6"]` absent |
+| FW-NF02 | `test_fw_nf02_nftables_snapshot_family_field_is_nft` | nftables parse branch + `--is-baseline`; `detect_framework()` mocked | Snapshot `rulesets` has `"nft"` key; `"ipv4"` and `"ipv6"` absent; `snapshot["family"] == "nft"` |
+| FW-NF03 | `test_fw_nf03_iptables_framework_does_not_invoke_nft_parser` | Probe output with iptables sections; `detect_framework()` mocked to return `framework="iptables-legacy"` | `parse_nft_ruleset()` call count == 0; `parsed["ipv4"]` and/or `parsed["ipv6"]` populated |
+| FW-NF04 | `test_fw_nf04_nftables_diff_uses_nft_diff_rulesets` | nftables baseline (synthetic: `rulesets={"nft":{}}`) + nftables current; `detect_framework()` mocked; `nft_diff_rulesets` and `classify_diff` both mocked | `nft_diff_rulesets()` call count == 1; `classify_diff()` call count == 0 |
+| FW-NF05 | `test_fw_nf05_iptables_diff_uses_diff_rulesets_and_classify_diff` | iptables baseline (synthetic: `rulesets={"ipv4":{}}`) + iptables current; `detect_framework()` mocked; `diff_rulesets` and `classify_diff` both mocked | `diff_rulesets()` call count == 1; `classify_diff()` call count == 1; `nft_diff_rulesets()` call count == 0 |
+| FW-NF06 | `test_fw_nf06_framework_mismatch_raises_value_error` | Baseline snapshot has `rulesets={"ipv4":{}}` (no `"nft"` key); current parsed has `"nft"` key; `detect_framework()` mocked to return `"nftables"` | `ValueError` raised with "Framework mismatch" in message; `nft_diff_rulesets()` call count == 0; no drift artifact written |
+| FW-NF07 | `test_fw_nf07_nftables_unavailable_section_warns` | `nftables` probe section contains `###UNAVAILABLE###`; `detect_framework()` mocked to return `"nftables"` | `parsed["nft"] == None`; warning in `config.parse_warnings`; `parse_nft_ruleset()` call count == 0; no exception |
+| FW-NF07b | `test_fw_nf07b_nftables_empty_section_treated_as_unavailable` | `nftables` probe section is empty string (section key absent); `detect_framework()` mocked to return `"nftables"` | Same as FW-NF07: `parsed["nft"] == None`; warning emitted; `parse_nft_ruleset()` call count == 0 |
+| FW-NF08 | `test_fw_nf08_probe_script_contains_nftables_section` | `_PROBE_SCRIPT` string constant | Script contains `###SECTION:nftables###` and `nft --json list ruleset` |
+
+**Key invariants:**
+- **FW-NF04** explicitly asserts `classify_diff()` call count == 0. This is the critical separation invariant — `classify_diff()` on nftables output would corrupt the drift report with spurious iptables chain-pattern annotations.
+- **FW-NF06** verifies the mismatch guard fires before any diff engine is called, not after — `nft_diff_rulesets()` call count == 0 is the assertion.
+- **FW-NF04/FW-NF05** use mock.patch on all three diff/classify functions simultaneously so the call count of each can be independently asserted.
+- Implementation location: `tests/test_inspector.py`, alongside existing inspector tests.
+
+---
+
 ## 4. Coverage Matrix
 
 | Requirement area | Tests |
@@ -288,6 +315,13 @@ Core inspector pipeline functions: probe output parsing, snapshot I/O, shell exe
 | Input immutability | CC-18 |
 | Output schema completeness | CC-19, 20 |
 | Pattern extensibility | CC-22 |
+| nftables parse branch (nft key populated, iptables keys absent) | FW-NF01, FW-NF02 |
+| iptables parse branch not affected by nftables addition | FW-NF03 |
+| nftables diff uses nft_diff_rulesets; classify_diff not called | FW-NF04 |
+| iptables diff path unchanged | FW-NF05 |
+| Framework mismatch guard raises ValueError | FW-NF06 |
+| nftables section unavailable handled gracefully | FW-NF07 |
+| Probe script contains nftables section | FW-NF08 |
 
 ---
 
@@ -295,7 +329,10 @@ Core inspector pipeline functions: probe output parsing, snapshot I/O, shell exe
 
 | Gap | Impact | When to close |
 |-----|--------|---------------|
+| FW-NF01 through FW-NF08b not yet implemented | nftables integration path is documented but not unit-tested | Implement in `tests/test_inspector.py` alongside nftables Multipass E2E validation |
+| SEC-PROBE-05 expected SHA-256 hash stale | The nftables section was added to `_PROBE_SCRIPT`; the expected hash constant in the test must be recalculated | Recalculate with `python3 -c "import hashlib; from firewall_inspector import _PROBE_SCRIPT; print(hashlib.sha256(_PROBE_SCRIPT.encode()).hexdigest())"` and update the test before running SEC-PROBE-05 |
 | Command classification covers only 2 commands | Misclassification of additional Azure commands would be undetected | Add tests for all probe delivery, SCP retrieval, and NSG mutation commands |
 | `AzureProvider.run_probe()` not unit-testable | Two tests skipped; live Azure path untested in CI | Add integration test environment with az CLI + test VM |
 | `SafeExecShell` HITL gate full decision loop | HITL approval/deny/timeout behavior is not tested end-to-end | Integration test with Ghost Agent when SafeExecShell is available |
 | `--family both` orchestrator path | Two-family parse flow is validated on Multipass only; not in pytest | Add unit test with dual parse mock after Multipass validation |
+| nftables Multipass E2E | nftables baseline + drift scenarios not validated on a live VM | Create Multipass `fw-nftables` VM (Ubuntu 22.04 native nftables) and run E2E suite |

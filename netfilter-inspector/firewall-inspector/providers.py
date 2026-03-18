@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -280,8 +281,9 @@ class AzureProvider(_BaseSSHProvider):
         shell: ShellProtocol,
         resource_group: str,
         ssh_user: str,
-        target_vm_ip: str,
-        target_ssh_key_path: str,
+        target_vm_ip: str = "",
+        target_ssh_key_path: str = "",
+        vm_name: str = "",
         subscription_id: str | None = None,
         bastion_public_ip: str | None = None,
         bastion_ssh_key_path: str | None = None,
@@ -295,7 +297,34 @@ class AzureProvider(_BaseSSHProvider):
             bastion_ssh_key_path = bastion_ssh_key_path,
         )
         self._resource_group  = resource_group
+        self._vm_name         = vm_name
         self._subscription_id = subscription_id
+
+    # ---------------------------------------------------------------------------
+    # Internal helpers
+    # ---------------------------------------------------------------------------
+
+    def _az_run_cmd(self, script: str, extra: str = "") -> str:
+        """
+        Build an az vm run-command invoke command for this provider's VM.
+
+        All three control-plane operations (run_probe, retrieve, cleanup) share
+        the same prefix; only the --scripts argument and optional --parameters differ.
+
+        Args:
+            script: Value for the --scripts argument (e.g. "'cat /tmp/fw_abc.txt'").
+            extra:  Optional suffix appended verbatim (e.g. " --parameters sid user").
+        """
+        sub_flag = f" --subscription {self._subscription_id}" if self._subscription_id else ""
+        return (
+            f"az vm run-command invoke"
+            f"{sub_flag}"
+            f" --resource-group {self._resource_group}"
+            f" --name {self._vm_name}"
+            f" --command-id RunShellScript"
+            f" --scripts {script}"
+            f"{extra}"
+        )
 
     # ---------------------------------------------------------------------------
     # Probe execution
@@ -314,6 +343,9 @@ class AzureProvider(_BaseSSHProvider):
         The probe script is written to a local temp file and passed via @filename.
         This avoids shell-escaping the multi-line script inline.
 
+        vm_name is accepted for interface compatibility with SSHProvider but the
+        authoritative VM name for the az command is self._vm_name (set at construction).
+
         Returns the parsed stdout from the probe:
             {"probe_output_path": str, "probe_output_bytes": int}
 
@@ -327,19 +359,13 @@ class AzureProvider(_BaseSSHProvider):
             Path(probe_tmp).write_text(probe_script, encoding="utf-8")
             os.chmod(probe_tmp, 0o600)
 
-            sub_flag = f" --subscription {self._subscription_id}" if self._subscription_id else ""
-            cmd = (
-                f"az vm run-command invoke"
-                f"{sub_flag}"
-                f" --resource-group {self._resource_group}"
-                f" --name {vm_name}"
-                f" --command-id RunShellScript"
-                f" --scripts @{probe_tmp}"
-                f" --parameters {session_id} {ssh_user}"
+            cmd = self._az_run_cmd(
+                script=f"@{probe_tmp}",
+                extra=f" --parameters {session_id} {ssh_user}",
             )
             result = self._shell.execute({
                 "command":   cmd,
-                "reasoning": f"Run firewall probe on {vm_name} (session {session_id})",
+                "reasoning": f"Run firewall probe on {self._vm_name} (session {session_id})",
             })
 
             if result["status"] == "denied":
@@ -358,6 +384,55 @@ class AzureProvider(_BaseSSHProvider):
                     Path(probe_tmp).unlink()
                 except OSError:
                     pass
+
+    # ---------------------------------------------------------------------------
+    # Retrieve + cleanup via Azure control plane (overrides _BaseSSHProvider SCP/SSH)
+    # ---------------------------------------------------------------------------
+
+    def retrieve_probe_output(self, remote_path: str, local_path: str) -> None:
+        """
+        Retrieve probe output from the target VM via az vm run-command invoke.
+
+        Uses 'cat <remote_path>' via the Azure control plane — no SSH/SCP needed.
+        Writes the file content to local_path.
+
+        Raises RuntimeError on failure.
+        """
+        _validate_remote_path(remote_path)
+        cmd = self._az_run_cmd(script=f"'cat {remote_path}'")
+        result = self._shell.execute({
+            "command":   cmd,
+            "reasoning": f"Retrieve probe output from {self._vm_name}:{remote_path}",
+        })
+        if result["status"] == "denied":
+            raise RuntimeError("Retrieve command denied by safety shell")
+        if result["exit_code"] != 0:
+            raise RuntimeError(
+                f"az vm run-command retrieve failed (exit {result['exit_code']}): "
+                f"{result['output'][:200]}"
+            )
+        content = _extract_az_run_stdout(result["output"])
+        Path(local_path).write_text(content, encoding="utf-8")
+
+    def cleanup_probe_output(self, remote_path: str) -> bool:
+        """
+        Remove probe output file from the target VM via az vm run-command invoke.
+
+        Uses 'rm -f <remote_path>' via the Azure control plane — no SSH needed.
+
+        Returns True on success, False on failure (warning only).
+        Cleanup failure is advisory — the investigation result is still valid;
+        the remote temp file will be reclaimed by tmpfiles/tmpwatch (~24h TTL).
+        """
+        _validate_remote_path(remote_path)
+        cmd = self._az_run_cmd(script=f"'rm -f {remote_path}'")
+        result = self._shell.execute({
+            "command":   cmd,
+            "reasoning": f"Clean up probe temp file {remote_path} on {self._vm_name}",
+        })
+        if result["status"] == "denied":
+            return False
+        return result["exit_code"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +517,56 @@ class SSHProvider(_BaseSSHProvider):
 
 
 # ---------------------------------------------------------------------------
+# Helpers: az vm run-command JSON response parsing
+# ---------------------------------------------------------------------------
+
+# mktemp template in probe script: /tmp/fw_XXXXXX.txt
+# The XXXXXX placeholder is replaced with exactly 6 random alphanumeric chars.
+_REMOTE_PATH_RE = re.compile(r"^/tmp/fw_[A-Za-z0-9]{6}\.txt$")
+
+
+def _validate_remote_path(path: str) -> None:
+    """
+    Guard against path injection in az vm run-command --scripts arguments.
+
+    remote_path is set by mktemp on the target VM and extracted from probe stdout.
+    It should always match /tmp/fw_XXXXXX.txt. Any deviation is treated as
+    potentially malicious and rejected before the path reaches a shell command.
+
+    Raises ValueError for any non-conforming path.
+    """
+    if not _REMOTE_PATH_RE.fullmatch(path):
+        raise ValueError(
+            f"Unexpected remote_path {path!r}. "
+            "Expected /tmp/fw_XXXXXX.txt (mktemp pattern from probe script). "
+            "Refusing to use this path in a shell command."
+        )
+
+
+def _extract_az_run_stdout(az_output: str) -> str:
+    """
+    Extract stdout text from an az vm run-command JSON response.
+
+    The az CLI wraps script output in a JSON envelope; stdout appears in the
+    'message' field between '[stdout]' and '[stderr]' markers.
+    Falls back to the raw string if JSON parsing fails.
+    """
+    try:
+        data = json.loads(az_output)
+        for item in data.get("value", []):
+            msg = item.get("message", "")
+            if "[stdout]" in msg:
+                # The az CLI envelope is "[stdout]\n<content>[stderr]".
+                # Remove exactly one leading newline (the envelope separator) —
+                # lstrip would incorrectly eat leading newlines that belong to the content.
+                content = msg.split("[stdout]", 1)[1].split("[stderr]", 1)[0]
+                return content[1:] if content.startswith("\n") else content
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return az_output
+
+
+# ---------------------------------------------------------------------------
 # Parse probe response (AzureProvider: JSON envelope; SSHProvider: raw stdout)
 # ---------------------------------------------------------------------------
 
@@ -459,17 +584,7 @@ def _parse_probe_response(az_output: str) -> dict:
     Returns: {"probe_output_path": str, "probe_output_bytes": int}
     Raises:  RuntimeError if the expected lines cannot be found.
     """
-    # Try JSON envelope first (AzureProvider path)
-    stdout_text = ""
-    try:
-        data = json.loads(az_output)
-        for item in data.get("value", []):
-            msg = item.get("message", "")
-            if "[stdout]" in msg:
-                stdout_text = msg.split("[stdout]", 1)[1].split("[stderr]", 1)[0]
-                break
-    except (json.JSONDecodeError, AttributeError):
-        stdout_text = az_output  # fall back to raw output (SSHProvider path)
+    stdout_text = _extract_az_run_stdout(az_output)
 
     path_match  = None
     bytes_match = None
