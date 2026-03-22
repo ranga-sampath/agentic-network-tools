@@ -1,0 +1,1 @@
+Our partner service at IP address 203.0.113.47 cannot connect to tf-dest-vm on port 22. SSH connections time out or are refused immediately. The Azure NSG on tf-dest-vm shows port 22 is allowed inbound. The VM is running and healthy in the portal. No NSG changes were made recently. Investigate why the partner IP cannot reach the VM in resource group nw-forensics-rg.
