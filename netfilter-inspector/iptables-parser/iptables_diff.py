@@ -153,6 +153,8 @@ def diff_rulesets(baseline: dict, current: dict) -> dict:
 
     # --- Chains from entirely new tables → chains_added ---
     # Their rules do NOT also appear in rules_added (no double-counting).
+    # Include the rule list so explain_diff can describe their contents without
+    # requiring a separate snapshot lookup.
     for tname in tables_added:
         for cname, cdata in c_tables[tname]["chains"].items():
             chains_added.append({
@@ -160,6 +162,12 @@ def diff_rulesets(baseline: dict, current: dict) -> dict:
                 "chain":      cname,
                 "type":       cdata["type"],
                 "rule_count": len(cdata["rules"]),
+                "rules":      [{"position": r.get("position"),
+                                "target":   r.get("target"),
+                                "protocol": r.get("protocol"),
+                                "source":   r.get("source"),
+                                "raw_rule": r.get("raw_rule")}
+                               for r in cdata["rules"]],
             })
 
     # --- Chains from entirely removed tables → chains_removed ---
@@ -170,6 +178,12 @@ def diff_rulesets(baseline: dict, current: dict) -> dict:
                 "chain":      cname,
                 "type":       cdata["type"],
                 "rule_count": len(cdata["rules"]),
+                "rules":      [{"position": r.get("position"),
+                                "target":   r.get("target"),
+                                "protocol": r.get("protocol"),
+                                "source":   r.get("source"),
+                                "raw_rule": r.get("raw_rule")}
+                               for r in cdata["rules"]],
             })
 
     # --- Tables present in both: chain-level and rule-level diff ---
@@ -187,6 +201,12 @@ def diff_rulesets(baseline: dict, current: dict) -> dict:
                 "chain":      cname,
                 "type":       cdata["type"],
                 "rule_count": len(cdata["rules"]),
+                "rules":      [{"position": r.get("position"),
+                                "target":   r.get("target"),
+                                "protocol": r.get("protocol"),
+                                "source":   r.get("source"),
+                                "raw_rule": r.get("raw_rule")}
+                               for r in cdata["rules"]],
             })
 
         # Chains removed within this table
@@ -197,6 +217,12 @@ def diff_rulesets(baseline: dict, current: dict) -> dict:
                 "chain":      cname,
                 "type":       cdata["type"],
                 "rule_count": len(cdata["rules"]),
+                "rules":      [{"position": r.get("position"),
+                                "target":   r.get("target"),
+                                "protocol": r.get("protocol"),
+                                "source":   r.get("source"),
+                                "raw_rule": r.get("raw_rule")}
+                               for r in cdata["rules"]],
             })
 
         # Chains present in both

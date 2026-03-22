@@ -152,6 +152,11 @@ SSH_USER="$2"
 OUT=$(mktemp /tmp/fw_XXXXXX.txt)
 chmod 600 "$OUT"
 
+# az vm run-command runs with a minimal PATH that may omit /usr/sbin and /sbin.
+# Prepend them explicitly so iptables, ip6tables, nft, and iptables-save are found
+# regardless of the extension's shell environment.
+export PATH=/usr/local/sbin:/usr/sbin:/sbin:$PATH
+
 collect() {
   printf '###SECTION:framework_detection###\n'
   iptables --version 2>&1          || true
@@ -178,7 +183,11 @@ collect() {
   fi
 
   printf '###SECTION:nftables###\n'
-  if command -v nft >/dev/null 2>&1; then
+  # Collect nft ruleset only on native nftables systems (no iptables-save available).
+  # On iptables-nft systems (Ubuntu 22.04+), iptables-save IS available and captures
+  # everything; nft --json list ruleset is large (~7KB+) and would push the
+  # framework_detection section beyond the az vm run-command 4KB stdout buffer.
+  if ! command -v iptables-save >/dev/null 2>&1 && command -v nft >/dev/null 2>&1; then
     nft --json list ruleset 2>&1 || printf '###UNAVAILABLE###\n'
   else
     printf '###UNAVAILABLE###\n'
@@ -290,6 +299,7 @@ def run(config: InspectorConfig, shell: Any, provider: Any) -> dict:
     target_label = config.vm_name or config.target_vm_ip
 
     print(f"[1/5] Running probe on {target_label} (session: {config.session_id}) ...")
+    print(f"      (az vm run-command in progress — typically 30–60 s) ...", flush=True)
     probe_info = provider.run_probe(
         vm_name=target_label,
         session_id=config.session_id,
@@ -301,6 +311,7 @@ def run(config: InspectorConfig, shell: Any, provider: Any) -> dict:
 
     # Retrieve output file to local temp path
     print(f"[2/5] Retrieving probe output from {target_label} ...")
+    print(f"      (az vm run-command in progress — typically 30–60 s) ...", flush=True)
     local_tmp: str | None = None
     try:
         fd, local_tmp = tempfile.mkstemp(suffix=".txt", prefix="fw_local_")

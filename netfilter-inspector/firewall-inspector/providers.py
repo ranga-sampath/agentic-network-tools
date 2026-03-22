@@ -85,10 +85,12 @@ class LocalShell:
                 text=True,
                 timeout=120,
             )
-            output   = proc.stdout + proc.stderr
-            status   = "success" if proc.returncode == 0 else "error"
+            stdout    = proc.stdout
+            output    = proc.stdout + proc.stderr
+            status    = "success" if proc.returncode == 0 else "error"
             exit_code = proc.returncode
         except subprocess.TimeoutExpired:
+            stdout    = ""
             output    = "command timed out after 120 seconds"
             status    = "error"
             exit_code = -1
@@ -97,7 +99,8 @@ class LocalShell:
 
         return {
             "status":    status,
-            "output":    output,
+            "output":    output,   # stdout+stderr combined (general use, error display)
+            "stdout":    stdout,   # stdout only (az CLI JSON lives here; stderr has warnings)
             "exit_code": exit_code,
             "audit_id":  "local",
         }
@@ -376,7 +379,7 @@ class AzureProvider(_BaseSSHProvider):
                     f"{result['output'][:200]}"
                 )
 
-            return _parse_probe_response(result["output"])
+            return _parse_probe_response(result.get("stdout", result["output"]))
 
         finally:
             if probe_tmp and Path(probe_tmp).exists():
@@ -411,7 +414,7 @@ class AzureProvider(_BaseSSHProvider):
                 f"az vm run-command retrieve failed (exit {result['exit_code']}): "
                 f"{result['output'][:200]}"
             )
-        content = _extract_az_run_stdout(result["output"])
+        content = _extract_az_run_stdout(result.get("stdout", result["output"]))
         Path(local_path).write_text(content, encoding="utf-8")
 
     def cleanup_probe_output(self, remote_path: str) -> bool:
@@ -560,7 +563,8 @@ def _extract_az_run_stdout(az_output: str) -> str:
                 # Remove exactly one leading newline (the envelope separator) —
                 # lstrip would incorrectly eat leading newlines that belong to the content.
                 content = msg.split("[stdout]", 1)[1].split("[stderr]", 1)[0]
-                return content[1:] if content.startswith("\n") else content
+                result = content[1:] if content.startswith("\n") else content
+                return result
     except (json.JSONDecodeError, AttributeError):
         pass
     return az_output

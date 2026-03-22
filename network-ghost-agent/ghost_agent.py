@@ -545,7 +545,13 @@ separate investigative thread that requires its own confirmed cause.
   If any symptom fails (c) or has no direct audit_id for (d), register a new hypothesis
   and continue investigating. This checklist applies regardless of confidence level —
   a confident but incorrect attribution is still an incorrect attribution.
-  (e) Before writing recommended_actions, apply two principles in order:
+  (e) Before calling complete_investigation, all hypotheses still in state ACTIVE must be
+      explicitly closed via manage_hypotheses(updates=[...]). A hypothesis is REFUTED if the
+      confirmed root cause fully explains the symptom without it (i.e. it is unnecessary).
+      A hypothesis is UNVERIFIABLE if it cannot be tested given the evidence available.
+      Leaving a hypothesis in state ACTIVE in the report means the investigation is incomplete.
+      No hypothesis may remain ACTIVE when complete_investigation is called.
+  (f) Before writing recommended_actions, apply two principles in order:
       SPECIFICITY — does my evidence name a specific artifact? If yes, the remediation must
       name that same artifact. The test: could the operator act on this recommendation without
       opening another tool? If they would need to go look up what to remove or where to apply
@@ -692,16 +698,20 @@ KEY RULE: [LOCAL] results NEVER override [CLOUD] API or PCAP findings.
    same investigation. That produces a trivially empty diff (nothing can change in seconds) and
    is not evidence. A compare is only valid against a baseline from a prior run or change window.
    Use this when Azure NSG and route checks are clean and traffic is still unexpectedly blocked.
-   EXPLAIN PARAMETER (user-directed only):
-   - WHEN the user asks for a firewall explanation (e.g. "explain the firewall state",
-     "explain what the rules are doing", "what do these rules mean", "explain the changes"):
+   EXPLAIN PARAMETER — when to use:
+   - WHEN a compare_session_id diff returns has_critical_changes=true: proceed to explain
+     those changes by calling detect_config_drift(explain=True, compare_session_id=<same_id>, ...).
+     Do NOT write your own firewall analysis — always delegate to explain=True for this.
+   - WHEN the user explicitly asks for an explanation (e.g. "explain the firewall state",
+     "explain what the rules are doing", "what do these rules mean"):
      you MUST call detect_config_drift with explain=true. Two patterns are valid:
        (a) Combined: detect_config_drift(is_baseline=True, explain=True, ...) — capture + explain
        (b) Standalone: detect_config_drift(explain=True, session_id=<session_id>, ...) — explain an
            existing snapshot. Use this AFTER a baseline capture to add explanation in a second call.
-     Do NOT write your own firewall analysis or summary — always delegate to explain=True.
-   - WHEN the user does NOT ask for an explanation: do NOT pass explain=true. The structured
-     drift data is sufficient for all diagnostic and forensic tasks.
+   - WHEN drift is detected but has_critical_changes=false AND the user did not ask for
+     explanation: do NOT call explain=true. The structured diff data is sufficient.
+   - WHEN there is no baseline comparison (is_baseline=True only, no diff): do NOT call
+     explain=true unless the user explicitly asks.
      The baseline result includes "blocking_rules" (explicit DROP/REJECT rules and default DROP
      policies), "inbound_default_drop" (true if INPUT chain has a DROP default policy), and
      "inbound_explicitly_allowed_ports" (ports with explicit ACCEPT rules). Use these fields to
@@ -1479,7 +1489,8 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
                 else:
                     from iptables_explain import explain_diff as _ipt_ed
                     parts = [_ipt_ed(fd) for fd in drift_by_family.values()
-                             if isinstance(fd, dict) and "error" not in fd]
+                             if isinstance(fd, dict) and "error" not in fd
+                             and fd.get("drift_detected", False)]
                     if parts:
                         result["explanation"] = "\n\n---\n\n".join(parts)
             except Exception as exc:
