@@ -1212,7 +1212,7 @@ def main():
         "--explain",
         action="store_true",
         help="Generate an LLM-powered explanation of the parsed firewall state. "
-             "Requires ANTHROPIC_API_KEY. Writes snapshot JSON to "
+             "Requires GEMINI_API_KEY. Writes snapshot JSON to "
              "<input>_snapshot.json; explanation goes to stdout (or --output).",
     )
     parser.add_argument(
@@ -1220,7 +1220,7 @@ def main():
         metavar="FILE2",
         dest="explain_diff",
         help="Compare FILE (baseline) with FILE2 (current) and generate an "
-             "LLM-powered explanation of what changed. Requires ANTHROPIC_API_KEY. "
+             "LLM-powered explanation of what changed. Requires GEMINI_API_KEY. "
              "Writes both snapshot JSONs and the diff JSON to disk; explanation "
              "goes to stdout (or --output).",
     )
