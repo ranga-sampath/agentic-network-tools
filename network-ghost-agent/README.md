@@ -27,7 +27,7 @@ agentic-network-tools/
 ├── agentic-pcap-forensic-engine/    ← required: PCAP forensic analysis
 ├── agentic-cloud-orchestrator/      ← required: Azure packet capture orchestration
 ├── agentic-pipe-meter/              ← required: VM-to-VM performance measurement (use cases G–L)
-├── netfilter-inspector/             ← required: OS-layer firewall inspection (use cases J–K)
+├── netfilter-inspector/             ← required: OS-layer firewall inspection (use cases J–K, M–O)
 └── network-ghost-agent/             ← you are here
 ```
 
@@ -81,7 +81,7 @@ uv run --python 3.12 python ghost_agent.py \
   --storage-container <container-name>
 ```
 
-> **Note:** `run_pipe_meter` (use cases G–L) and `detect_config_drift` (use cases J–K) require a `--config` file. Individual flags are sufficient for use cases A–F only.
+> **Note:** `run_pipe_meter` (use cases G–L) and `detect_config_drift` (use cases J–K, M–O) require a `--config` file. Individual flags are sufficient for use cases A–F only.
 
 ### OS firewall inspection (`detect_config_drift`)
 
@@ -112,7 +112,7 @@ uv run --python 3.12 python ghost_agent.py --resume <session-id>
 
 ## Demo Scripts
 
-Twelve end-to-end demo scenarios with full presenter guides are in `demo/`. Use cases A–F cover NSG, routing, and packet capture investigations. Use cases G–L add VM-to-VM performance measurement via Pipe Meter and require `agentic-pipe-meter/` to be present.
+Fifteen end-to-end demo scenarios with full presenter guides are in `demo/`. Use cases A–F cover NSG, routing, and packet capture investigations. Use cases G–L add VM-to-VM performance measurement via Pipe Meter and require `agentic-pipe-meter/` to be present. Use cases M–O cover OS-layer firewall faults (fail2ban, CIS hardening, Docker daemon) invisible to the Azure control plane and require `netfilter-inspector/` to be present.
 
 | Use Case | Scenario | Duration |
 |---|---|---|
@@ -128,6 +128,9 @@ Twelve end-to-end demo scenarios with full presenter guides are in `demo/`. Use 
 | J — "The Shadow Firewall" | iptables DROP port 5001 invisible to NSG audit; PCAP proves OS-level block | ~20 min |
 | K — "The Bandwidth Thief" | tc tbf rate throttle + iptables ICMP drop — two independent OS-level faults | ~20 min |
 | L — "The Double Lock" | NSG deny + tc netem on the same dest VM — two faults, two remediations | ~15 min |
+| M — "The Banned Guest" | fail2ban ban blocks partner IP — NSG says port 22 open | ~8 min |
+| N — "The Hardening Surprise" | CIS hardening flips INPUT policy to DROP — NSG clean, all traffic dropped | ~10 min |
+| O — "The Docker Coup" | Docker daemon restart silently rewrites OS firewall — NSG unchanged | ~10 min |
 
 ```bash
 # One-time setup

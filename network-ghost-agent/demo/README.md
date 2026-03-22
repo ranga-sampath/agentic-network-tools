@@ -530,6 +530,112 @@ Paste the prompt from `demo/use_case_l/PROMPT.txt`.
 
 ---
 
+## Use Case M — "The Banned Guest"
+**OS-layer fail2ban ban — Azure NSG says port 22 open, partner cannot SSH in | ~8 minutes**
+
+### What this shows
+- Ghost Agent crossing the Azure→OS boundary without SSH — via Azure run-command
+- `detect_config_drift(is_baseline=True, explain=True)`: captures live iptables state and explains it in a single call
+- `f2b-sshd` chain recognised as a fail2ban ban chain; active `/32` REJECT rule on the partner IP surfaced
+- NSG audit returns ALLOWED — the control-plane blind spot made concrete
+
+### Before the session
+```bash
+chmod +x demo/use_case_m/setup.sh demo/use_case_m/teardown.sh
+./demo/use_case_m/setup.sh
+```
+
+### Run the demo
+```bash
+uv run --python 3.12 python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_m/PROMPT.txt`.
+
+### What to narrate while it runs
+- **NSG audit returns ALLOWED:** "Completely clean NSG. If the Azure portal is your only view, the investigation is over. The agent doesn't stop here."
+- **`detect_config_drift(is_baseline=True, explain=True)`:** "No baseline on record — it captures live state and explains it in a single call. This is the pivot from Azure API to OS layer."
+- **Explain output surfaces `f2b-sshd`:** "There it is. `f2b-sshd` — fail2ban's SSH ban chain. One active rule: `203.0.113.47/32 → REJECT`. The partner IP hit a failed authentication threshold. Azure has zero visibility into kernel-level chains."
+- **Money moment:** "The Azure portal was telling the truth. Port 22 IS allowed — at the Azure layer. fail2ban operates in the OS kernel, below the layer Azure manages. This fault cannot be found from the control plane, ever."
+
+### After the demo
+```bash
+./demo/use_case_m/teardown.sh
+```
+
+---
+
+## Use Case N — "The Hardening Surprise"
+**CIS hardening flips INPUT policy to DROP — NSG clean, all traffic silently dropped | ~10 minutes**
+
+### What this shows
+- Single iptables policy change (`INPUT ACCEPT → DROP`) with maximum blast radius: every unmatched packet silently dropped
+- `detect_config_drift(compare_session_id=<baseline>, explain=True)` diffs current state against a pre-hardening baseline
+- Explain-diff output names the exact policy change and three added ACCEPT rules (Wire Server, ESTABLISHED, SSH)
+- NSG shows all ports ALLOWED throughout — the Azure layer was never touched
+
+### Before the session
+```bash
+chmod +x demo/use_case_n/setup.sh demo/use_case_n/teardown.sh
+./demo/use_case_n/setup.sh
+# setup.sh prints the baseline session ID and writes it to PROMPT.txt automatically
+```
+
+### Run the demo
+```bash
+uv run --python 3.12 python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_n/PROMPT.txt` (baseline session ID is pre-filled by setup.sh).
+
+### What to narrate while it runs
+- **NSG comes back clean:** "Azure agrees with the security team — all ports allowed, no changes. The issue is below the layer Azure manages."
+- **`detect_config_drift` fires with baseline ID:** "Change-window baseline diff. The hardening script ran between baseline and now — the diff will show exactly what it changed."
+- **Explain-diff surfaces `INPUT ACCEPT → DROP`:** "`INPUT policy: ACCEPT → DROP`. That's the entire root cause. Every packet that doesn't match an explicit ACCEPT rule is now silently dropped. The NSG says port 22 allowed — true at the Azure layer. The OS-layer policy says default-deny everything else."
+- **Money moment:** "One line in the diff output explains total VM unreachability. The security team ran a correct procedure. Ghost Agent found the policy flip in seconds from a change-window baseline."
+
+### After the demo
+```bash
+./demo/use_case_n/teardown.sh
+```
+
+---
+
+## Use Case O — "The Docker Coup"
+**Docker daemon restart silently rewrites OS firewall — NSG unchanged, container networking broken | ~10 minutes**
+
+### What this shows
+- Daemon restart as a firewall change event: Docker injects 4 chains and 8 rules into iptables on every start
+- `DOCKER-ISOLATION-STAGE-2 DROP` blocks inter-bridge traffic — identified from chains_added rule contents in the diff
+- `detect_config_drift` auto-triggers `explain=True` when `has_critical_changes=True` — no explicit user instruction needed
+- NSG audit: unchanged throughout. The Azure control plane is blind to daemon-driven kernel changes.
+
+### Before the session
+```bash
+chmod +x demo/use_case_o/setup.sh demo/use_case_o/teardown.sh
+./demo/use_case_o/setup.sh
+# setup.sh stops Docker, captures baseline, restarts Docker (or injects chains)
+# Baseline session ID is written to PROMPT.txt automatically
+```
+
+### Run the demo
+```bash
+uv run --python 3.12 python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_o/PROMPT.txt` (baseline session ID is pre-filled by setup.sh).
+
+### What to narrate while it runs
+- **NSG clean:** "Control plane untouched. The user said the NSG is unchanged — confirmed. The change happened somewhere the portal can't see."
+- **`detect_config_drift` fires:** "Change-window baseline diff. The daemon restart happened between baseline and now. This is exactly the class of event baselines exist for."
+- **`rules_added=8, critical=True`:** "Eight rules, four new chains, all `DOCKER-*`. Docker's daemon writes these into the kernel on every start. Azure doesn't know they exist."
+- **`DOCKER-ISOLATION-STAGE-2 DROP` identified:** "First rule in this chain: `DROP`. It blocks inter-bridge traffic. Any inter-service call crossing Docker bridge boundaries hits this and gets silently dropped."
+- **Money moment:** "A daemon restart. Nobody touched the NSG. Nobody ran an iptables command. Docker did it automatically, as a side effect of starting up. This is invisible from Azure — always. Ghost Agent found it in three turns."
+
+### After the demo
+```bash
+./demo/use_case_o/teardown.sh
+```
+
+---
+
 ## Likely Questions and Answers
 
 **"What model is it using?"**
