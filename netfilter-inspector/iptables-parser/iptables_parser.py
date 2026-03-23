@@ -912,6 +912,7 @@ def parse_iptables_save(text: str, family: str = "ipv4") -> dict:
     chain_positions: dict[str, int] = {}
     base_format = "ip6tables-save" if family == "ipv6" else "iptables-save"
     input_format = base_format
+    framework = "iptables-legacy"  # default; overridden if header says (nf_tables)
     commit_seen = False
 
     def flush_table():
@@ -930,8 +931,10 @@ def parse_iptables_save(text: str, family: str = "ipv4") -> dict:
     for line_raw in lines:
         line = line_raw.strip()
 
-        # Skip blanks and comments
+        # Skip blanks and comments (but detect framework from header)
         if not line or line.startswith("#"):
+            if "(nf_tables)" in line:
+                framework = "iptables-nft"
             continue
 
         # Table header
@@ -1172,6 +1175,7 @@ def parse_iptables_save(text: str, family: str = "ipv4") -> dict:
     return {
         "parsed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "family": family,
+        "framework": framework,
         "input_format": input_format,
         "tables": tables,
         "diagnostics": diagnostics,
