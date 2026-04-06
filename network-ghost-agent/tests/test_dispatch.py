@@ -252,7 +252,7 @@ def test_D10_multiple_function_calls_dispatched(tmp_path):
     orch.orchestrate.return_value = {"status": "task_completed"}
 
     state = _new_session("gemini-2.0-flash", str(tmp_path))
-    state["active_hypothesis_ids"] = ["H1"]
+    # No active hypotheses — this test asserts dispatch count, not hypothesis tracking.
     session_file = str(tmp_path / "session.json")
 
     # First response: two function calls

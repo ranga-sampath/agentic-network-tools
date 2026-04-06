@@ -440,7 +440,7 @@ def test_H17_trivial_text_only_auto_continues(tmp_path):
 
     state = _new_session("gemini-2.0-flash", str(tmp_path / "audit"))
     state["active_task_ids"] = ["ghost_tf-source-vm_stub"]
-    state["active_hypothesis_ids"] = ["H1"]
+    # active_task_ids alone drives has_active_work=True; no open hypotheses needed.
     session_file = str(tmp_path / "session.json")
     ghost_tools = _build_ghost_tools()
     shell = MagicMock()

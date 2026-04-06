@@ -81,11 +81,12 @@ def test_T2_nine_function_declarations():
                 cleanup_task, manage_hypotheses, complete_investigation.
     Added in v1.1: run_pipe_meter (use cases G-L: VM-to-VM performance),
                    detect_config_drift (use cases J-K: OS firewall inspection).
+    Added in v1.2: detect_effective_network_drift (Azure effective routes + NSG).
     """
     tools = _build_ghost_tools()
     declarations = tools.function_declarations
-    assert len(declarations) == 9, (
-        f"Expected 9 FunctionDeclarations, got {len(declarations)}: "
+    assert len(declarations) == 10, (
+        f"Expected 10 FunctionDeclarations, got {len(declarations)}: "
         f"{[d.name for d in declarations]}"
     )
 
@@ -99,6 +100,7 @@ def test_T2_nine_function_declarations():
         "complete_investigation",
         "run_pipe_meter",
         "detect_config_drift",
+        "detect_effective_network_drift",
     }
     actual_names = {d.name for d in declarations}
     assert actual_names == expected_names, (

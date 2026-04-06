@@ -329,6 +329,7 @@ _AZ_SAFE_SPECIAL = frozenset({
     "show-next-hop",
     "list-effective-nsg",
     "list-effective-route-table",
+    "show-effective-route-table",
 })
 
 

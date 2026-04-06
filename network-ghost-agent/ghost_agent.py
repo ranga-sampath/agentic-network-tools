@@ -432,6 +432,41 @@ def _build_ghost_tools() -> types.Tool:
                 )),
             }, required=["reasoning"]),
         ),
+
+        types.FunctionDeclaration(
+            name="detect_effective_network_drift",
+            description=(
+                "Snapshot and diff Azure control-plane computed network state for a VM: "
+                "effective routes (az network nic show-effective-route-table) and effective "
+                "NSG security rules (az network nic list-effective-nsg). "
+                "Use this to detect BGP route withdrawal, UDR changes, and NSG evaluation drift "
+                "that is invisible when querying configured route tables or NSGs directly. "
+                "Modes: is_baseline=true stores a snapshot; compare_session_id diffs against it. "
+                "Returns drift_detected, changes_count, and per-category change lists "
+                "(bgp_route_change, udr_route_change, system_route_change, security_rule_change). "
+                "All operations are read-only — no routes or NSG rules are modified."
+            ),
+            parameters=S(type=T.OBJECT, properties={
+                "is_baseline": S(type=T.BOOLEAN, description=(
+                    "If true, capture and store a baseline snapshot. "
+                    "Use before a change window or at investigation start."
+                )),
+                "compare_session_id": S(type=T.STRING, description=(
+                    "Session ID of the baseline snapshot to compare against. "
+                    "Required when is_baseline is false or omitted."
+                )),
+                "session_id": S(type=T.STRING, description=(
+                    "Override the session ID for this run. "
+                    "Auto-generated as eni_YYYYMMDD_HHMMSS if omitted."
+                )),
+                "reasoning": S(type=T.STRING, description=(
+                    "One sentence explaining why this effective network probe is needed."
+                )),
+                "hypothesis_id": S(type=T.STRING, description=(
+                    "ID of the active hypothesis this probe is attributed to (e.g. 'H1')."
+                )),
+            }, required=["reasoning"]),
+        ),
     ])
 
 # ---------------------------------------------------------------------------
@@ -517,6 +552,11 @@ HYPOTHESIS MANAGEMENT:
 - Always set hypothesis_id in every subsequent tool call to scope denial counters correctly.
 - Transition state on every finding: manage_hypotheses(update=[{id, state}]).
   Terminal states (CONFIRMED/REFUTED/UNVERIFIABLE/CONTRADICTED) auto-remove from active list.
+  NEGATIVE RESULTS ARE FINDINGS: drift_detected=false, no change detected, no rule found —
+  these are evidence, not the absence of evidence. A hypothesis that predicted X occurred is
+  REFUTED when the evidence shows X did not occur. Do not leave it ACTIVE or mark it CONFIRMED
+  because the tool ran successfully. The outcome field describes what the hypothesis predicted,
+  not whether the tool returned a result.
 - When _meta.denial_threshold_reached=true: update that hypothesis to UNVERIFIABLE.
   If active_hypothesis_ids is now empty: call complete_investigation(confidence="low").
 - RECOVERY RULE: At the start of any response, if active_hypothesis_ids is empty AND
@@ -582,6 +622,26 @@ RESUME PROTOCOL (when is_resume=True):
 - Compare new results against prior audit_id references. If changed, update hypothesis states.
 - If a previously CONFIRMED hypothesis is contradicted by new evidence, revert it to ACTIVE.
 
+ARTIFACT PROVENANCE:
+Every baseline artifact carries a prefix that identifies its state space:
+  eni_* → Azure control-plane computed state (effective routes + NSG evaluation at the NIC).
+           Produced by detect_effective_network_drift. Must be compared via the same tool.
+  fw_*  → OS-layer kernel state (iptables/nftables rules inside the VM guest).
+           Produced by detect_config_drift. Must be compared via the same tool.
+These are different state spaces. Comparing an eni_ artifact through the OS-layer tool
+does not produce a diff — it fails integrity verification because the sha256 formats
+are incompatible and the data structures have nothing in common. The converse is equally
+wrong: an fw_ baseline compared via detect_effective_network_drift measures OS kernel
+state with a tool that only reads Azure API responses. Neither produces useful output.
+When an operator provides a session ID in their problem statement, read its prefix to
+determine the investigation layer they are asking about, then select the matching tool.
+If the tool reports that the baseline artifact is not found on disk: this is an environment
+error, not an investigation finding. Do NOT attempt to capture a substitute baseline — a
+baseline captured now is not the baseline the operator described, and using it as a substitute
+changes the temporal reference point and destroys the forensic value of the comparison.
+Report the missing artifact to the operator and stop. The operator must re-establish the
+precondition (re-run their baseline capture step) before the investigation can proceed.
+
 TOOL DECISION RULES:
 Symptom                          First tool                                   If denied / next step
 ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -601,6 +661,10 @@ OS firewall change suspected     detect_config_drift(provider=azure/ssh)      ru
 Post-incident before restore     detect_config_drift --compare-baseline       complete_investigation with drift artifact as evidence
 Change window sign-off           detect_config_drift --compare-baseline       Only approve sign-off if drift_detected=false or all changes explained
 Environment parity failure       detect_config_drift on both environments     compare per-family summaries; discrepancies explain the parity gap
+BGP route withdrawal suspected   detect_effective_network_drift(is_baseline/compare)  az network vnet-gateway list, then capture_traffic
+NSG effective eval drift         detect_effective_network_drift --compare-baseline     az network nsg rule list (individual NSGs)
+UDR change sign-off (Azure)      detect_effective_network_drift --compare-baseline     az network route-table route list
+Routing anomaly — NIC-level      detect_effective_network_drift(is_baseline)           az network nic show-effective-route-table (manual)
 
 STORAGE SERVICE ENDPOINT PATTERN — when a VM cannot reach an Azure Storage account:
 After checking NSG (clean) and routes (clean), ALWAYS query BOTH of the following before
@@ -723,6 +787,32 @@ KEY RULE: [LOCAL] results NEVER override [CLOUD] API or PCAP findings.
      Do NOT escalate to packet capture when the firewall data is conclusive.
    - When the result contains an "explanation" field, include its FULL content verbatim in the
      investigation report under a "## Firewall Explanation" section.
+
+7. AZURE EFFECTIVE NETWORK STATE (detect_effective_network_drift):
+   Probes control-plane computed network state at the NIC — not configured state.
+   Covers what individual NSG and route-table queries cannot: the combined evaluation result
+   of subnet NSG + NIC NSG, and the actual effective routing decision at the NIC.
+   Use this when:
+   - A VM cannot reach a destination and NSG rule lists show no deny — the effective NSG
+     may have a subnet-level deny overriding the NIC NSG allow.
+   - Routing anomalies are suspected but az network route-table route list looks clean —
+     the effective route table shows which route is actually winning at the NIC.
+   - BGP route withdrawal is suspected — VirtualNetworkGateway-sourced routes disappearing
+     from the effective route table are definitive evidence of withdrawal.
+   - Post-change sign-off for UDR or NSG changes — diff baseline vs. current to confirm
+     only intended changes landed.
+   Change categories:
+   - bgp_route_change     — VirtualNetworkGateway-sourced route appeared or disappeared
+   - udr_route_change     — User-sourced route changed (next-hop, prefix, state)
+   - system_route_change  — Default-sourced route changed (rare; Azure maintenance)
+   - security_rule_change — effective NSG rule added, removed, or priority changed
+   TWO DISTINCT MODES — same discipline as detect_config_drift:
+     is_baseline=True   → capture a snapshot. Return session_id. Stop.
+                          NEVER immediately compare against this baseline in the same run.
+     compare_session_id → diff against a PRIOR baseline from before the change or incident.
+   drift_detected=false is positive evidence — the effective network state is unchanged.
+   Requires Network Contributor (not Reader) on the resource group.
+   If the tool returns an RBAC error, report it and stop — do not retry with different args.
 
 CONFLICT RESOLUTION:
 When two results contradict, trust the higher-fidelity source. State explicitly which result you
@@ -1498,6 +1588,107 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         return result
 
 
+def _run_effective_network_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
+    """Invoke effective_network_inspector.py as a subprocess and return the drift result."""
+    import subprocess
+    import tempfile
+
+    eni_path = _ROOT / "effective-network-inspector" / "effective_network_inspector.py"
+    if not eni_path.exists():
+        return {"status": "error", "error": f"effective_network_inspector.py not found at {eni_path}"}
+
+    is_baseline       = tool_args.get("is_baseline", False)
+    compare_session_id = tool_args.get("compare_session_id", "")
+    if not is_baseline and not compare_session_id:
+        return {"status": "error",
+                "error": "Either is_baseline=true or compare_session_id must be provided"}
+
+    audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
+    vm_name   = ghost_cfg.get("ENI_VM_NAME") or ghost_cfg.get("DEST_VM_NAME", "")
+
+    # Ghost Agent integration targets VM scope only (MVP).
+    # VNet scope is available via the standalone CLI (--scope vnet --vnet-id ...).
+    config_lines = [
+        f'RESOURCE_GROUP={ghost_cfg.get("RESOURCE_GROUP", "")}',
+        f'AUDIT_DIR={audit_dir}',
+        f'SCOPE=vm',
+        f'VM_NAME={vm_name}',
+    ]
+    if ghost_cfg.get("SUBSCRIPTION_ID"):
+        config_lines.append(f'SUBSCRIPTION_ID={ghost_cfg["SUBSCRIPTION_ID"]}')
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".env", delete=False) as tmp:
+        tmp.write("\n".join(config_lines) + "\n")
+        tmp_config_path = tmp.name
+
+    try:
+        cmd = [sys.executable, str(eni_path), "--config", tmp_config_path]
+        if is_baseline:
+            cmd.append("--is-baseline")
+        else:
+            cmd += ["--compare-baseline", compare_session_id]
+        if tool_args.get("session_id"):
+            cmd += ["--session-id", tool_args["session_id"]]
+
+        start_time = time.time()
+        try:
+            proc = subprocess.run(cmd, timeout=300)
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "error": "effective_network_inspector timed out after 300 seconds"}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+    finally:
+        try:
+            os.unlink(tmp_config_path)
+        except OSError:
+            pass
+
+    if is_baseline:
+        snapshots = sorted(
+            [p for p in Path(audit_dir).glob("eni_*_snapshot.json")
+             if p.stat().st_mtime >= start_time - 1],
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not snapshots:
+            return {"status": "error",
+                    "error": "effective_network_inspector did not produce a snapshot artifact",
+                    "exit_code": proc.returncode}
+        snap_path  = snapshots[-1]
+        session_id = snap_path.name.replace("_snapshot.json", "")
+        result: dict = {"status": "success", "mode": "baseline",
+                        "session_id": session_id, "artifact": str(snap_path)}
+        try:
+            snap_data = json.loads(snap_path.read_text())
+            result["nic_count"] = len(snap_data.get("nics", []))
+        except Exception:
+            pass
+        return result
+    else:
+        drifts = sorted(
+            [p for p in Path(audit_dir).glob("eni_*_vs_eni_*_diff.json")
+             if p.stat().st_mtime >= start_time - 1],
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not drifts:
+            return {"status": "error",
+                    "error": "effective_network_inspector did not produce a diff artifact",
+                    "exit_code": proc.returncode}
+        try:
+            data = json.loads(drifts[-1].read_text())
+        except Exception as exc:
+            return {"status": "error", "error": f"Failed to parse drift artifact: {exc}"}
+
+        return {
+            "status":              "success",
+            "mode":                "compare",
+            "artifact":            str(drifts[-1]),
+            "drift_detected":      data.get("drift_detected", False),
+            "changes_count":       data.get("changes_count", 0),
+            "changes_by_category": data.get("changes_by_category", {}),
+            "nic_diffs":           data.get("nic_diffs", []),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Tool dispatch
 # ---------------------------------------------------------------------------
@@ -1541,6 +1732,11 @@ def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator,
         if not ghost_cfg:
             return {"status": "error", "error": "detect_config_drift requires --config to be set at startup"}
         return _run_firewall_inspector_handler(ghost_cfg, tool_args)
+
+    if tool_name == "detect_effective_network_drift":
+        if not ghost_cfg:
+            return {"status": "error", "error": "detect_effective_network_drift requires --config to be set at startup"}
+        return _run_effective_network_inspector_handler(ghost_cfg, tool_args)
 
     return {"status": "error", "error": "unknown_tool", "tool": tool_name}
 
@@ -2155,6 +2351,24 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
 
             # Exit trigger — complete_investigation never calls shell or orchestrator
             if tool_name == "complete_investigation":
+                active_ids = state.get("active_hypothesis_ids", [])
+                if active_ids:
+                    rejection = {
+                        "status": "rejected",
+                        "reason": (
+                            f"{len(active_ids)} hypothesis/hypotheses still ACTIVE: {active_ids}. "
+                            "Close each one via manage_hypotheses(update=[...]) before calling "
+                            "complete_investigation again. "
+                            "REFUTED = the confirmed root cause fully explains this symptom without "
+                            "needing this hypothesis. "
+                            "UNVERIFIABLE = the hypothesis cannot be tested given available evidence."
+                        ),
+                    }
+                    print(f"[complete_investigation] REJECTED — open hypotheses: {active_ids}")
+                    response_parts.append(types.Part(
+                        function_response=types.FunctionResponse(name=tool_name, response=rejection)
+                    ))
+                    continue
                 save_session(state, session_file)
                 _generate_rca(state, tool_args, shell, session_file)
                 _offer_cleanup_before_rca(state, orchestrator, session_file)
