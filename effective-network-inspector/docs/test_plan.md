@@ -1,4 +1,4 @@
-# Test Plan — Azure Effective Network Inspector
+# Test Plan — Effective Network Inspector
 
 > Design references: `docs/product-requirements.md`, `docs/architecture.md`
 > Implementation under test: `providers.py`, `diff.py`, `effective_network_inspector.py`

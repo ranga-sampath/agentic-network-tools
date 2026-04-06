@@ -1,4 +1,4 @@
-# Architecture — Azure Effective Network Inspector
+# Architecture — Effective Network Inspector
 
 > Document order: **Requirements → Architecture (this document) → Design → Code**
 > Requirements source: `effective-network-inspector/docs/product-requirements.md`

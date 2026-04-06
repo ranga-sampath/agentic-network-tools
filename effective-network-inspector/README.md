@@ -1,4 +1,4 @@
-# Azure Effective Network Inspector
+# Effective Network Inspector
 
 **Baseline and diff Azure control-plane computed network state — effective routes and NSG evaluation — for forensic investigation and change-window sign-off.**
 

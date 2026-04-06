@@ -1,5 +1,5 @@
 """
-effective_network_inspector.py — Azure Effective Network Inspector
+effective_network_inspector.py — Effective Network Inspector
 
 Snapshots and diffs Azure control-plane computed network state for one or more NICs:
     - Effective route table (az network nic show-effective-route-table)

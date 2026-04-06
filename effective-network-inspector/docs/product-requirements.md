@@ -1,4 +1,4 @@
-# Product Requirements — Azure Effective Network Inspector
+# Product Requirements — Effective Network Inspector
 
 ## Problem
 
@@ -16,7 +16,7 @@ The gap: **there is no tool that baselines these two computed states and diffs t
 
 ## What This Tool Does
 
-The **Azure Effective Network Inspector** (`effective_network_inspector.py`) snapshots and diffs the two Azure control-plane computed states that determine actual network behaviour for a VM:
+The **Effective Network Inspector** (`effective_network_inspector.py`) snapshots and diffs the two Azure control-plane computed states that determine actual network behaviour for a VM:
 
 1. **Effective route table per NIC** — `az network nic show-effective-route-table` — all routes by source: `User` (UDR), `Default` (system routes), `VirtualNetworkGateway` (BGP-propagated). BGP route withdrawal shows as `VirtualNetworkGateway`-sourced routes disappearing between snapshots.
 
