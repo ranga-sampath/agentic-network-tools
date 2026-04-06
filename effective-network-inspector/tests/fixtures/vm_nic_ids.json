@@ -1,0 +1,4 @@
+[
+  "/subscriptions/sub-123/resourceGroups/my-rg/providers/Microsoft.Network/networkInterfaces/nic-a",
+  "/subscriptions/sub-123/resourceGroups/my-rg/providers/Microsoft.Network/networkInterfaces/nic-b"
+]

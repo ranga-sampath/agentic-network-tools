@@ -1,0 +1,18 @@
+{
+  "value": [
+    {
+      "addressPrefix": ["10.0.0.0/16"],
+      "nextHopType": "VnetLocal",
+      "nextHopIpAddress": [],
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["0.0.0.0/0"],
+      "nextHopType": "VirtualAppliance",
+      "nextHopIpAddress": ["10.0.1.4"],
+      "source": "User",
+      "state": "Active"
+    }
+  ]
+}

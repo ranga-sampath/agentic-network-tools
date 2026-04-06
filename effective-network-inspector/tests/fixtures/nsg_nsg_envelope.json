@@ -1,0 +1,34 @@
+{
+  "networkSecurityGroups": [
+    {
+      "effectiveSecurityRules": [
+        {
+          "name": "allow-https",
+          "priority": 100,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "*",
+          "sourceAddressPrefixes": [],
+          "destinationAddressPrefix": "*",
+          "destinationAddressPrefixes": [],
+          "destinationPortRange": "443",
+          "destinationPortRanges": ["443"]
+        },
+        {
+          "name": "deny-all-inbound",
+          "priority": 65500,
+          "direction": "Inbound",
+          "access": "Deny",
+          "protocol": "*",
+          "sourceAddressPrefix": "*",
+          "sourceAddressPrefixes": [],
+          "destinationAddressPrefix": "*",
+          "destinationAddressPrefixes": [],
+          "destinationPortRange": "*",
+          "destinationPortRanges": []
+        }
+      ]
+    }
+  ]
+}

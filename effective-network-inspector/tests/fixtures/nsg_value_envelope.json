@@ -1,0 +1,22 @@
+{
+  "value": [
+    {
+      "networkSecurityGroup": {},
+      "effectiveSecurityRules": [
+        {
+          "name": "allow-ssh",
+          "priority": 200,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "*",
+          "sourceAddressPrefixes": [],
+          "destinationAddressPrefix": "*",
+          "destinationAddressPrefixes": [],
+          "destinationPortRange": "22",
+          "destinationPortRanges": ["22"]
+        }
+      ]
+    }
+  ]
+}
