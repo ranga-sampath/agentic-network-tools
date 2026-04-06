@@ -1,0 +1,1 @@
+Window CR-2026-0402 just closed. CAB needs sign-off before the freeze ends. Did the window actually make any effective network changes? Baseline from start of window: eni_pre_window_R. Also a separate issue — Prometheus scrapes on port 9090 from tf-dest-vm have been failing, predates the window. Resource group: nw-forensics-rg.

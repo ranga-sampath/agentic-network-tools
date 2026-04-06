@@ -1,0 +1,1 @@
+P1 — TCP 5432 to tf-dest-vm is broken. Customer says nothing changed. On-call checked the NSG and says port 5432 is allowed. Also seeing a latency spike from tf-source-vm (10.0.1.4). Last known good baseline: eni_pre_escalation_Q. Resource group: nw-forensics-rg.

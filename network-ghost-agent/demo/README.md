@@ -636,6 +636,124 @@ Paste the prompt from `demo/use_case_o/PROMPT.txt` (baseline session ID is pre-f
 
 ---
 
+## Use Case P — "The Rollback That Wasn't"
+**ENI baseline diff reveals incomplete Azure change-window rollback | ~12 minutes**
+
+### What this shows
+- `detect_effective_network_drift` diffing current Azure control-plane state against a pre-window baseline
+- SHA-256 verified diff as cryptographic proof that the "complete rollback" claim is false
+- Azure-layer fault (NSG DENY left behind) followed by OS-layer fault (forgotten iptables rule) — two independent findings from the same window
+- The `eni_` artifact prefix distinguishing Azure control-plane baselines from OS-layer firewall baselines
+
+### Before the session
+```bash
+chmod +x demo/use_case_p/setup.sh demo/use_case_p/teardown.sh
+./demo/use_case_p/setup.sh
+# setup.sh captures pre-window baseline, then injects both faults
+# Note the baseline session ID printed at the end — it goes into the prompt
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_p/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Hypothesis formation:** "The engineer said rollback is done. The agent treats that as a claim to verify, not a fact to accept."
+- **`detect_effective_network_drift` fires:** "This is the Azure control-plane layer — effective routes and effective NSG evaluation per NIC. Not the NSG rule list. The computed result of all NSGs evaluated in sequence."
+- **`drift_detected: true` — security_rule_change:** "`ghost-demo-rollback-block-8080` — added, inbound, TCP 8080, DENY. This NSG rule was supposed to be removed during the rollback window. It wasn't."
+- **SHA-256 verified baseline:** "The baseline is cryptographically signed. The diff tool verifies the baseline before comparing. The result is tamper-evident. This is audit-grade evidence — the rollback email was incorrect."
+- **Pivot to OS layer:** "Azure layer explained. The agent doesn't stop — it checks whether there's more."
+- **`detect_config_drift` → iptables DROP TCP 5001:** "A DROP rule for port 5001. An engineer injected this during the window to isolate a service and forgot to remove it. Zero trace in Azure. Found in two turns."
+- **Money moment:** "Two artifacts from the same window, at two different layers. One SHA-256 verified diff proving the rollback claim was false, and one OS-layer rule invisible to every Azure tool. The on-call engineer had both answers in under 5 minutes."
+
+### After the demo
+```bash
+./demo/use_case_p/teardown.sh
+```
+
+---
+
+## Use Case Q — "The Rule Nobody Checked"
+**P1 escalation — subnet NSG fires before NIC NSG; customer claims nothing changed | ~12 minutes**
+
+### What this shows
+- NSG evaluation order: subnet NSG evaluated first for inbound, NIC NSG second — a priority-100 deny at the subnet NSG layer overrides all NIC NSG allows
+- `detect_effective_network_drift` diff against a last-known-good baseline as cryptographic disproof of "nothing changed"
+- Two independent faults (NSG block + tc netem latency) isolated and attributed separately
+- The on-call engineer checked the NIC NSG — it showed port 5432 as allowed. The effective evaluation told a different story.
+
+### Before the session
+```bash
+chmod +x demo/use_case_q/setup.sh demo/use_case_q/teardown.sh
+./demo/use_case_q/setup.sh
+# setup.sh captures last-known-good baseline, then injects both faults
+# Note the baseline session ID printed at the end — it goes into the prompt
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_q/PROMPT.txt`.
+
+### What to narrate while it runs
+- **"Customer says nothing changed":** "The prompt includes the on-call engineer's conclusion: NSG looks clean. The agent treats 'NSG looks clean' as one data point, not a conclusion."
+- **`detect_effective_network_drift` fires:** "Baseline diff. If the customer is right and nothing changed, this diff will be empty."
+- **`drift_detected: true` — priority-100 DENY TCP 5432:** "`ghost-demo-subnet-block-5432`, priority 100, inbound, TCP 5432. The on-call engineer checked the NIC NSG — it shows port 5432 allowed. That's true. But inbound evaluation hits the subnet NSG first. A priority-100 deny there overrides everything below it."
+- **Key insight:** "Every engineer learns to check NSG rules. The effective NSG evaluation is the computed result of subnet NSG and NIC NSG together. No single NSG resource query surfaces both layers."
+- **Latency thread:** "Second symptom — latency spike. The agent opens a separate investigative thread. The NSG finding doesn't explain latency."
+- **pipe_meter / tc qdisc show → netem delay 50ms:** "tc netem on source VM. 50ms artificial delay injected by whoever claimed 'nothing changed.' Completely separate fault, different layer, different remediation."
+- **Money moment:** "Customer said nothing changed. The baseline diff is cryptographic evidence that something did. Two independent faults, two remediations. Dispute resolved in minutes, not hours."
+
+### After the demo
+```bash
+./demo/use_case_q/teardown.sh
+```
+
+---
+
+## Use Case R — "The 60-Second Sign-Off"
+**`drift_detected: false` as a machine-readable change-management certificate | ~10 minutes**
+
+### What this shows
+- `drift_detected: false` is an explicit negative confirmation — not the absence of a result, but a cryptographic assertion that effective network state is unchanged
+- SHA-256 verified baseline provides tamper-evident proof the comparison is valid
+- Two completely separate findings from one session: the change window was clean (ENI layer) AND a pre-existing Prometheus block is found (OS layer via `detect_config_drift`)
+- The CAB gets a machine-readable sign-off artifact without a manual audit
+
+### Before the session
+```bash
+chmod +x demo/use_case_r/setup.sh demo/use_case_r/teardown.sh
+./demo/use_case_r/setup.sh
+# setup.sh injects pre-existing iptables DROP TCP 9090, then captures ENI baseline
+# No Azure NSG changes are made — the "window" made zero Azure network changes
+# Note the baseline session ID printed at the end — it goes into the prompt
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_r/PROMPT.txt`.
+
+### What to narrate while it runs
+- **The ask:** "The change owner needs CAB sign-off before the merge freeze. They need to prove the window made no effective network changes. That's a negative — notoriously hard to prove."
+- **`detect_effective_network_drift` fires:** "Baseline diff. The window made zero Azure network changes — we know this because setup.sh didn't make any. Watch what the result says."
+- **`drift_detected: false`:** "Explicit. Not an absent result. Not an empty list. The field is always written — `drift_detected: false` means the tool ran, compared, and found nothing. The baseline is SHA-256 verified. This is an audit-grade artifact."
+- **Money moment (part 1):** "Attach this diff JSON to the change record. The CAB doesn't need to audit individual NSG rules or trace Activity Log entries. The effective state comparison is the answer."
+- **Prometheus ticket:** "Separate investigation thread. Port 9090 failing — predates the window. The agent knows these are different problems."
+- **`detect_config_drift` → iptables DROP TCP 9090:** "There it is. OS-level rule, completely invisible to Azure. Pre-existing — the baseline was captured after this rule was injected, so the ENI diff correctly didn't flag it. The iptables inspector finds it independently."
+- **Money moment (part 2):** "One session: cryptographic proof the window was clean, plus a separate pre-existing OS fault found and attributed. The change window is signed off. The Prometheus ticket has a root cause. Total time: under 10 minutes."
+
+### After the demo
+```bash
+./demo/use_case_r/teardown.sh
+```
+
+---
+
 ## Likely Questions and Answers
 
 **"What model is it using?"**

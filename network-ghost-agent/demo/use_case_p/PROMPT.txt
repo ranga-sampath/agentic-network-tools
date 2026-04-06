@@ -1,0 +1,1 @@
+Window CR-2026-0401 closed 90 minutes ago. Lead engineer says rollback is done. But port 8080 to tf-dest-vm is still unreachable from 10.0.1.4 — only started after the window. We have a pre-window baseline, session eni_pre_window_P. Resource group: nw-forensics-rg.
