@@ -25,6 +25,7 @@ __pycache__/
 .claude/
 .vscode/
 .idea/
+CLAUDE.md
 
 # Application Output (Generated data)
 agentic-pcap-forensic-engine/tests/sample_pcaps/
