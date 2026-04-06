@@ -5,22 +5,29 @@ Public API
 ----------
 extract_routes(json_str)     -> list[dict]
     Parse raw az network nic show-effective-route-table JSON into a stable
-    list of normalized route dicts.
+    list of normalized route dicts. addressPrefix and nextHopIpAddress are
+    preserved as sorted lists.
 
 extract_nsg_rules(json_str)  -> list[dict]
     Parse raw az network nic list-effective-nsg JSON into a stable list of
-    normalized security rule dicts.
+    normalized security rule dicts. expandedSourceAddressPrefix is preserved
+    for use by the diff engine.
 
 compute_diff(baseline, compare) -> dict
     Diff two ENI snapshots. Returns the diff artifact dict with:
-        drift_detected, changes_count, changes_by_category, nic_diffs
+        drift_detected, changes_count, changes_by_category, nic_diffs, skipped_nics
 
 Change categories
 -----------------
     bgp_route_change      route with source VirtualNetworkGateway added or removed
-    udr_route_change      route with source User added, removed, or changed
-    system_route_change   route with source Default added, removed, or changed
-    security_rule_change  effective NSG rule added, removed, or changed
+    udr_route_change      route with source User added or removed
+    system_route_change   route with source Default added or removed; also used for
+                          unknown source values (defensive fallback)
+    security_rule_change  effective NSG rule added or removed
+
+All changes are expressed as "added" or "removed" pairs. There is no "changed"
+change type. A route whose next-hop changes produces one "removed" (old) and one
+"added" (new) change object.
 """
 
 from __future__ import annotations
@@ -36,27 +43,22 @@ def _normalize_route(raw: dict) -> dict:
     """
     Normalize a single az effective-route-table entry to a stable canonical form.
 
-    az returns addressPrefix and nextHopIpAddress as lists; we collapse to
-    scalars. Unknown / null values are normalised to empty string or None.
+    addressPrefix and nextHopIpAddress are preserved as sorted lists.
+    az returns these as lists; string values (older API responses) are coerced
+    to single-element lists for consistency.
     """
-    # addressPrefix: list ["10.0.0.0/16"] or string "10.0.0.0/16"
-    prefix_raw = raw.get("addressPrefix", "")
-    if isinstance(prefix_raw, list):
-        address_prefix = prefix_raw[0] if prefix_raw else ""
-    else:
-        address_prefix = prefix_raw or ""
+    prefix = raw.get("addressPrefix", [])
+    if isinstance(prefix, str):
+        prefix = [prefix] if prefix else []
 
-    # nextHopIpAddress: list ["1.2.3.4"] or [] or null
-    hop_raw = raw.get("nextHopIpAddress")
-    if isinstance(hop_raw, list):
-        next_hop: str | None = hop_raw[0] if hop_raw else None
-    else:
-        next_hop = hop_raw or None
+    hop = raw.get("nextHopIpAddress") or []
+    if isinstance(hop, str):
+        hop = [hop] if hop else []
 
     return {
-        "addressPrefix":    address_prefix,
+        "addressPrefix":    sorted(prefix),
         "nextHopType":      raw.get("nextHopType", ""),
-        "nextHopIpAddress": next_hop,
+        "nextHopIpAddress": sorted(hop),
         "source":           raw.get("source", ""),
         "state":            raw.get("state", "Active"),
     }
@@ -95,21 +97,24 @@ def _normalize_nsg_rule(raw: dict) -> dict:
     """
     Normalize a single effective security rule to a stable canonical form.
 
-    Sorts list-valued fields (destinationPortRanges, sourceAddressPrefixes, etc.)
-    so that rule order within lists does not produce false diffs.
+    Sorts list-valued fields so that rule order within lists does not produce
+    false diffs. Preserves expandedSourceAddressPrefix and
+    expandedDestinationAddressPrefix for use by the diff engine.
     """
     return {
-        "name":                       raw.get("name", ""),
-        "priority":                   int(raw.get("priority", 0)),
-        "direction":                  raw.get("direction", ""),
-        "access":                     raw.get("access", ""),
-        "protocol":                   raw.get("protocol", ""),
-        "sourceAddressPrefix":        raw.get("sourceAddressPrefix") or "",
-        "sourceAddressPrefixes":      sorted(raw.get("sourceAddressPrefixes") or []),
-        "destinationAddressPrefix":   raw.get("destinationAddressPrefix") or "",
-        "destinationAddressPrefixes": sorted(raw.get("destinationAddressPrefixes") or []),
-        "destinationPortRange":       raw.get("destinationPortRange") or "",
-        "destinationPortRanges":      sorted(raw.get("destinationPortRanges") or []),
+        "name":                              raw.get("name", ""),
+        "priority":                          int(raw.get("priority", 0)),
+        "direction":                         raw.get("direction", ""),
+        "access":                            raw.get("access", ""),
+        "protocol":                          raw.get("protocol", ""),
+        "sourceAddressPrefix":               raw.get("sourceAddressPrefix") or "",
+        "sourceAddressPrefixes":             sorted(raw.get("sourceAddressPrefixes") or []),
+        "expandedSourceAddressPrefix":       sorted(raw.get("expandedSourceAddressPrefix") or []),
+        "destinationAddressPrefix":          raw.get("destinationAddressPrefix") or "",
+        "destinationAddressPrefixes":        sorted(raw.get("destinationAddressPrefixes") or []),
+        "expandedDestinationAddressPrefix":  sorted(raw.get("expandedDestinationAddressPrefix") or []),
+        "destinationPortRange":              raw.get("destinationPortRange") or "",
+        "destinationPortRanges":             sorted(raw.get("destinationPortRanges") or []),
     }
 
 
@@ -147,7 +152,6 @@ def extract_nsg_rules(json_str: str) -> list[dict]:
                 raw_rules.extend(nsg.get("effectiveSecurityRules", []))
                 raw_rules.extend(entry.get("effectiveSecurityRules", []))
         else:
-            # Fallback: treat as single object containing rules list
             raw_rules = data.get("effectiveSecurityRules", [])
 
     normalized = [_normalize_nsg_rule(r) for r in raw_rules if isinstance(r, dict)]
@@ -155,7 +159,69 @@ def extract_nsg_rules(json_str: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Diff engine
+# Diff engine — route and NSG rule canonicalization for comparison
+# ---------------------------------------------------------------------------
+
+def _route_key(route: dict) -> tuple:
+    """Identity key for route matching: (sorted addressPrefix as tuple, source)."""
+    prefix = route.get("addressPrefix", [])
+    if isinstance(prefix, str):
+        prefix = [prefix] if prefix else []
+    return (tuple(sorted(prefix)), route.get("source", ""))
+
+
+def _canonicalise_route(route: dict) -> dict:
+    """Return a stable comparison dict from a route (handles both string and list addressPrefix)."""
+    prefix = route.get("addressPrefix", [])
+    if isinstance(prefix, str):
+        prefix = [prefix] if prefix else []
+
+    hop = route.get("nextHopIpAddress") or []
+    if isinstance(hop, str):
+        hop = [hop] if hop else []
+
+    return {
+        "addressPrefix":    sorted(prefix),
+        "nextHopType":      route.get("nextHopType", ""),
+        "nextHopIpAddress": sorted(hop),
+        "source":           route.get("source", ""),
+        "state":            route.get("state", "Active"),
+    }
+
+
+def _nsg_key(rule: dict) -> tuple:
+    """Identity key for NSG rule matching: (name, direction)."""
+    return (rule.get("name", ""), rule.get("direction", ""))
+
+
+def _canonicalise_nsg_rule(rule: dict) -> dict:
+    """
+    Return a stable comparison dict from an NSG rule.
+
+    Uses expandedSourceAddressPrefix when non-empty (resolved CIDRs from service tags).
+    Falls back to sourceAddressPrefixes when expanded is empty.
+    Same logic for destination.
+    """
+    expanded_src = rule.get("expandedSourceAddressPrefix") or []
+    src = sorted(expanded_src) if expanded_src else sorted(rule.get("sourceAddressPrefixes") or [])
+
+    expanded_dst = rule.get("expandedDestinationAddressPrefix") or []
+    dst = sorted(expanded_dst) if expanded_dst else sorted(rule.get("destinationAddressPrefixes") or [])
+
+    return {
+        "name":                       rule.get("name", ""),
+        "priority":                   int(rule.get("priority", 0)),
+        "direction":                  rule.get("direction", ""),
+        "access":                     rule.get("access", ""),
+        "protocol":                   rule.get("protocol", ""),
+        "sourceAddressPrefixes":      src,
+        "destinationAddressPrefixes": dst,
+        "destinationPortRanges":      sorted(rule.get("destinationPortRanges") or []),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Diff engine — change categorisation
 # ---------------------------------------------------------------------------
 
 _ROUTE_SOURCE_TO_CATEGORY = {
@@ -167,8 +233,12 @@ _ROUTE_SOURCE_TO_CATEGORY = {
 
 def _categorize_route_change(route: dict) -> str:
     source = route.get("source", "")
-    return _ROUTE_SOURCE_TO_CATEGORY.get(source, "udr_route_change")
+    return _ROUTE_SOURCE_TO_CATEGORY.get(source, "system_route_change")
 
+
+# ---------------------------------------------------------------------------
+# Per-NIC diff
+# ---------------------------------------------------------------------------
 
 def _diff_nic(
     baseline_nic: dict | None,
@@ -179,23 +249,26 @@ def _diff_nic(
 
     baseline_nic is None when the NIC is new (no baseline entry).
     In that case all compare entries are treated as "added".
+
+    All changes are expressed as "added" or "removed". A modified route or rule
+    (same identity key, different content) produces a "removed" (old) + "added"
+    (new) pair. There is no "changed" change type.
     """
     changes: list[dict] = []
 
     # ----- Routes -----
-    # Key: addressPrefix. Tracks the full route for change detection.
-    b_routes: dict[str, dict] = {}
+    b_routes: dict[tuple, dict] = {}
     if baseline_nic:
-        for r in baseline_nic.get("effective_routes", []):
-            b_routes[r["addressPrefix"]] = r
+        for r in (baseline_nic.get("effective_routes") or []):
+            b_routes[_route_key(r)] = _canonicalise_route(r)
 
-    c_routes: dict[str, dict] = {}
-    for r in compare_nic.get("effective_routes", []):
-        c_routes[r["addressPrefix"]] = r
+    c_routes: dict[tuple, dict] = {}
+    for r in (compare_nic.get("effective_routes") or []):
+        c_routes[_route_key(r)] = _canonicalise_route(r)
 
     # Removed routes (in baseline, not in compare)
-    for prefix, route in b_routes.items():
-        if prefix not in c_routes:
+    for key, route in b_routes.items():
+        if key not in c_routes:
             changes.append({
                 "change_type": "removed",
                 "category":    _categorize_route_change(route),
@@ -203,34 +276,37 @@ def _diff_nic(
             })
 
     # Added routes (in compare, not in baseline)
-    for prefix, route in c_routes.items():
-        if prefix not in b_routes:
+    for key, route in c_routes.items():
+        if key not in b_routes:
             changes.append({
                 "change_type": "added",
                 "category":    _categorize_route_change(route),
                 "route":       route,
             })
 
-    # Changed routes (in both, but properties differ)
-    for prefix in b_routes:
-        if prefix in c_routes and b_routes[prefix] != c_routes[prefix]:
+    # Modified routes (same key, different content) → removed + added pair
+    for key in b_routes:
+        if key in c_routes and b_routes[key] != c_routes[key]:
             changes.append({
-                "change_type": "changed",
-                "category":    _categorize_route_change(c_routes[prefix]),
-                "route_before": b_routes[prefix],
-                "route_after":  c_routes[prefix],
+                "change_type": "removed",
+                "category":    _categorize_route_change(b_routes[key]),
+                "route":       b_routes[key],
+            })
+            changes.append({
+                "change_type": "added",
+                "category":    _categorize_route_change(c_routes[key]),
+                "route":       c_routes[key],
             })
 
     # ----- NSG rules -----
-    # Key: (name, direction). Names are unique within the effective NSG scope.
     b_rules: dict[tuple, dict] = {}
     if baseline_nic:
-        for r in baseline_nic.get("effective_nsg_rules", []):
-            b_rules[(r["name"], r["direction"])] = r
+        for r in (baseline_nic.get("effective_nsg_rules") or []):
+            b_rules[_nsg_key(r)] = _canonicalise_nsg_rule(r)
 
     c_rules: dict[tuple, dict] = {}
-    for r in compare_nic.get("effective_nsg_rules", []):
-        c_rules[(r["name"], r["direction"])] = r
+    for r in (compare_nic.get("effective_nsg_rules") or []):
+        c_rules[_nsg_key(r)] = _canonicalise_nsg_rule(r)
 
     # Removed rules
     for key, rule in b_rules.items():
@@ -250,14 +326,18 @@ def _diff_nic(
                 "rule":        rule,
             })
 
-    # Changed rules (key matches but content differs)
+    # Modified rules (same key, different content) → removed + added pair
     for key in b_rules:
         if key in c_rules and b_rules[key] != c_rules[key]:
             changes.append({
-                "change_type": "changed",
+                "change_type": "removed",
                 "category":    "security_rule_change",
-                "rule_before": b_rules[key],
-                "rule_after":  c_rules[key],
+                "rule":        b_rules[key],
+            })
+            changes.append({
+                "change_type": "added",
+                "category":    "security_rule_change",
+                "rule":        c_rules[key],
             })
 
     return changes
@@ -267,10 +347,12 @@ def compute_diff(baseline_snapshot: dict, compare_snapshot: dict) -> dict:
     """
     Diff two ENI snapshots and produce the diff artifact.
 
-    NICs are matched by name. A NIC present in compare but absent in baseline
-    is treated as fully added (all its routes and rules are "added" changes).
-    A NIC present in baseline but absent in compare is noted but not expanded
-    (the NIC itself may have been detached — treat as a warning, not a change).
+    NICs are matched by name.
+    - NIC present in compare but absent in baseline: all its routes and rules
+      are "added" changes.
+    - NIC present in baseline but absent in compare: all its routes and rules
+      are "removed" changes (detached or renamed NIC is treated as drift).
+    - NIC errored in either snapshot: excluded from diff, added to skipped_nics.
 
     Returns a dict matching the diff artifact schema:
     {
@@ -284,36 +366,50 @@ def compute_diff(baseline_snapshot: dict, compare_snapshot: dict) -> dict:
     }
     """
     baseline_nics: dict[str, dict] = {
-        n["nic_name"]: n
-        for n in baseline_snapshot.get("nics", [])
+        n["nic_name"]: n for n in baseline_snapshot.get("nics", [])
     }
+    compare_nics: dict[str, dict] = {
+        n["nic_name"]: n for n in compare_snapshot.get("nics", [])
+    }
+
+    # Preserve ordering: baseline NICs first, then new NICs from compare
+    all_nic_names: list[str] = list(dict.fromkeys(
+        [n["nic_name"] for n in baseline_snapshot.get("nics", [])] +
+        [n["nic_name"] for n in compare_snapshot.get("nics", [])]
+    ))
 
     nic_diffs: list[dict] = []
     changes_by_category: dict[str, int] = {}
     skipped_nics: list[str] = []
 
-    for nic in compare_snapshot.get("nics", []):
-        nic_name = nic["nic_name"]
-        b_nic    = baseline_nics.get(nic_name)
+    for nic_name in all_nic_names:
+        b_nic = baseline_nics.get(nic_name)
+        c_nic = compare_nics.get(nic_name)
 
         # Skip if either side has an error — don't false-positive on missing data
-        if nic.get("error") or (b_nic is not None and b_nic.get("error")):
+        b_errored = b_nic is not None and b_nic.get("error")
+        c_errored = c_nic is not None and c_nic.get("error")
+        if b_errored or c_errored:
             skipped_nics.append(nic_name)
             continue
 
-        nic_changes = _diff_nic(b_nic, nic)
+        if c_nic is None:
+            # NIC present in baseline but absent from compare → fully removed
+            empty_compare = {
+                "nic_name":            nic_name,
+                "effective_routes":    [],
+                "effective_nsg_rules": [],
+                "error":               None,
+            }
+            nic_changes = _diff_nic(b_nic, empty_compare)
+        else:
+            nic_changes = _diff_nic(b_nic, c_nic)
 
         if nic_changes:
             nic_diffs.append({"nic_name": nic_name, "changes": nic_changes})
             for ch in nic_changes:
                 cat = ch["category"]
                 changes_by_category[cat] = changes_by_category.get(cat, 0) + 1
-
-    # Also skip NICs that were in baseline but not in compare (detached NIC — not drift)
-    compare_nic_names = {n["nic_name"] for n in compare_snapshot.get("nics", [])}
-    for nic_name, b_nic in baseline_nics.items():
-        if nic_name not in compare_nic_names and b_nic.get("error"):
-            skipped_nics.append(nic_name)
 
     total_changes = sum(changes_by_category.values())
 

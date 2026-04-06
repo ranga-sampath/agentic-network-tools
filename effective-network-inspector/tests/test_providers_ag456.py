@@ -151,12 +151,12 @@ class TestTypedExceptions:
                 provider.get_effective_routes_json("nic-x")
         assert not isinstance(exc_info.value, RBACError)
 
-    def test_empty_nic_list_raises_provider_error(self):
-        """Empty NIC list from VM raises ProviderError."""
+    def test_empty_nic_list_returns_empty_list(self):
+        """Empty NIC list from VM returns [] — orchestrator handles the empty case."""
         shell = _shell_ok("[]")
         provider = _provider(shell)
-        with pytest.raises(ProviderError):
-            provider.get_nic_names_for_vm("my-vm")
+        result = provider.get_nic_names_for_vm("my-vm")
+        assert result == []
 
     def test_nic_discovery_failure_raises_provider_error(self):
         """Non-zero exit from az vm nic list raises ProviderError."""

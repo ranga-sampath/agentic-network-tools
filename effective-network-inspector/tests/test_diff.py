@@ -71,9 +71,9 @@ class TestExtractRoutes:
         raw = (FIXTURES / "routes_value_envelope.json").read_text()
         routes = extract_routes(raw)
         assert len(routes) == 2
-        prefixes = [r["addressPrefix"] for r in routes]
-        assert "0.0.0.0/0" in prefixes
-        assert "10.0.0.0/16" in prefixes
+        all_prefixes = {p for r in routes for p in r["addressPrefix"]}
+        assert "0.0.0.0/0" in all_prefixes
+        assert "10.0.0.0/16" in all_prefixes
 
     def test_bare_list_envelope(self):
         """TC-DIFF-002: Bare list [...] is parsed correctly."""
@@ -83,17 +83,17 @@ class TestExtractRoutes:
         ]
         routes = extract_routes(json.dumps(data))
         assert len(routes) == 1
-        assert routes[0]["addressPrefix"] == "10.1.0.0/24"
+        assert routes[0]["addressPrefix"] == ["10.1.0.0/24"]
 
-    def test_list_valued_address_prefix_collapsed(self):
-        """TC-DIFF-003: addressPrefix as list is collapsed to scalar."""
+    def test_list_valued_address_prefix_preserved_as_list(self):
+        """TC-DIFF-003: addressPrefix as list is preserved as sorted list, not collapsed to scalar."""
         data = {"value": [
             {"addressPrefix": ["10.5.0.0/24"], "nextHopType": "VnetLocal",
              "nextHopIpAddress": [], "source": "Default", "state": "Active"}
         ]}
         routes = extract_routes(json.dumps(data))
-        assert routes[0]["addressPrefix"] == "10.5.0.0/24"
-        assert isinstance(routes[0]["addressPrefix"], str)
+        assert routes[0]["addressPrefix"] == ["10.5.0.0/24"]
+        assert isinstance(routes[0]["addressPrefix"], list)
 
     def test_empty_string_returns_empty_list(self):
         """TC-DIFF-004: Empty input returns []."""
@@ -115,26 +115,26 @@ class TestExtractRoutes:
              "nextHopIpAddress": [], "source": "Default", "state": "Active"},
         ]}
         routes = extract_routes(json.dumps(data))
-        assert routes[0]["addressPrefix"] == "10.0.0.0/8"
-        assert routes[1]["addressPrefix"] == "192.168.0.0/16"
+        assert routes[0]["addressPrefix"] == ["10.0.0.0/8"]
+        assert routes[1]["addressPrefix"] == ["192.168.0.0/16"]
 
-    def test_next_hop_ip_list_collapsed(self):
-        """nextHopIpAddress as single-element list is collapsed to scalar."""
+    def test_next_hop_ip_list_preserved_as_list(self):
+        """nextHopIpAddress as single-element list is preserved as sorted list."""
         data = {"value": [
             {"addressPrefix": "0.0.0.0/0", "nextHopType": "VirtualAppliance",
              "nextHopIpAddress": ["10.0.1.4"], "source": "User", "state": "Active"}
         ]}
         routes = extract_routes(json.dumps(data))
-        assert routes[0]["nextHopIpAddress"] == "10.0.1.4"
+        assert routes[0]["nextHopIpAddress"] == ["10.0.1.4"]
 
-    def test_next_hop_ip_empty_list_becomes_none(self):
-        """nextHopIpAddress as [] collapses to None."""
+    def test_next_hop_ip_empty_list_stays_empty(self):
+        """nextHopIpAddress as [] stays as empty list."""
         data = {"value": [
             {"addressPrefix": "10.0.0.0/16", "nextHopType": "VnetLocal",
              "nextHopIpAddress": [], "source": "Default", "state": "Active"}
         ]}
         routes = extract_routes(json.dumps(data))
-        assert routes[0]["nextHopIpAddress"] is None
+        assert routes[0]["nextHopIpAddress"] == []
 
     def test_bgp_routes_parsed(self):
         """VirtualNetworkGateway-sourced routes are parsed correctly."""
@@ -142,7 +142,7 @@ class TestExtractRoutes:
         routes = extract_routes(raw)
         bgp = [r for r in routes if r["source"] == "VirtualNetworkGateway"]
         assert len(bgp) == 2
-        prefixes = {r["addressPrefix"] for r in bgp}
+        prefixes = {p for r in bgp for p in r["addressPrefix"]}
         assert "10.2.0.0/24" in prefixes
         assert "192.168.0.0/16" in prefixes
 
@@ -284,7 +284,7 @@ class TestComputeDiff:
         assert diff["nic_diffs"][0]["changes"][0]["change_type"] == "added"
 
     def test_udr_next_hop_changed(self):
-        """TC-DIFF-014: UDR next-hop changed → udr_route_change, change_type=changed."""
+        """TC-DIFF-014: UDR next-hop changed → removed+added pair, no 'changed' type."""
         r_before = _route("0.0.0.0/0", source="User",
                           next_hop_type="VirtualAppliance", next_hop_ip="10.0.1.4")
         r_after  = _route("0.0.0.0/0", source="User",
@@ -292,21 +292,27 @@ class TestComputeDiff:
         baseline = _snap([_nic("nic-a", routes=[r_before])])
         compare  = _snap([_nic("nic-a", routes=[r_after])])
         diff = compute_diff(baseline, compare)
-        assert diff["changes_by_category"] == {"udr_route_change": 1}
-        change = diff["nic_diffs"][0]["changes"][0]
-        assert change["change_type"] == "changed"
-        assert "route_before" in change
-        assert "route_after" in change
-        assert change["route_after"]["nextHopIpAddress"] == "10.0.1.5"
+        assert diff["changes_count"] == 2
+        assert diff["changes_by_category"] == {"udr_route_change": 2}
+        changes = diff["nic_diffs"][0]["changes"]
+        assert {c["change_type"] for c in changes} == {"removed", "added"}
+        assert all(c["category"] == "udr_route_change" for c in changes)
+        removed = next(c for c in changes if c["change_type"] == "removed")
+        added   = next(c for c in changes if c["change_type"] == "added")
+        assert removed["route"]["nextHopIpAddress"] == ["10.0.1.4"]
+        assert added["route"]["nextHopIpAddress"]   == ["10.0.1.5"]
 
     def test_system_route_changed(self):
-        """TC-DIFF-015: Default-sourced route changed → system_route_change."""
+        """TC-DIFF-015: Default-sourced route changed → removed+added pair."""
         r_before = _route("10.0.0.0/16", source="Default", state="Active")
         r_after  = _route("10.0.0.0/16", source="Default", state="Invalid")
         baseline = _snap([_nic("nic-a", routes=[r_before])])
         compare  = _snap([_nic("nic-a", routes=[r_after])])
         diff = compute_diff(baseline, compare)
-        assert diff["changes_by_category"] == {"system_route_change": 1}
+        assert diff["changes_count"] == 2
+        assert diff["changes_by_category"] == {"system_route_change": 2}
+        changes = diff["nic_diffs"][0]["changes"]
+        assert {c["change_type"] for c in changes} == {"removed", "added"}
 
     def test_nsg_rule_added(self):
         """TC-DIFF-016: NSG rule added → security_rule_change, change_type=added."""
@@ -334,7 +340,7 @@ class TestComputeDiff:
         assert diff["nic_diffs"][0]["changes"][0]["change_type"] == "removed"
 
     def test_nsg_rule_priority_changed(self):
-        """TC-DIFF-018: Same rule name, priority changed → security_rule_change, changed."""
+        """TC-DIFF-018: Same rule name+direction, priority changed → removed+added pair."""
         r_before = _rule("allow-https", priority=200)
         r_before.update({"sourceAddressPrefixes": [], "destinationAddressPrefixes": [],
                          "destinationPortRanges": ["443"]})
@@ -344,14 +350,17 @@ class TestComputeDiff:
         baseline = _snap([_nic("nic-a", nsg_rules=[r_before])])
         compare  = _snap([_nic("nic-a", nsg_rules=[r_after])])
         diff = compute_diff(baseline, compare)
-        assert diff["changes_by_category"] == {"security_rule_change": 1}
-        change = diff["nic_diffs"][0]["changes"][0]
-        assert change["change_type"] == "changed"
-        assert "rule_before" in change
-        assert "rule_after" in change
+        assert diff["changes_count"] == 2
+        assert diff["changes_by_category"] == {"security_rule_change": 2}
+        changes = diff["nic_diffs"][0]["changes"]
+        assert {c["change_type"] for c in changes} == {"removed", "added"}
+        removed = next(c for c in changes if c["change_type"] == "removed")
+        added   = next(c for c in changes if c["change_type"] == "added")
+        assert removed["rule"]["priority"] == 200
+        assert added["rule"]["priority"] == 100
 
     def test_mixed_changes_multiple_categories(self):
-        """TC-DIFF-019: BGP removed + UDR changed + NSG added on same NIC."""
+        """TC-DIFF-019: BGP removed + UDR next-hop changed (removed+added) + NSG added."""
         bgp = _route("10.2.0.0/24", source="VirtualNetworkGateway",
                      next_hop_type="VirtualNetworkGateway")
         udr_before = _route("0.0.0.0/0", source="User",
@@ -365,9 +374,10 @@ class TestComputeDiff:
         baseline = _snap([_nic("nic-a", routes=[bgp, udr_before], nsg_rules=[])])
         compare  = _snap([_nic("nic-a", routes=[udr_after], nsg_rules=[nsg_rule])])
         diff = compute_diff(baseline, compare)
-        assert diff["changes_count"] == 3
+        # bgp:1 removed + udr:1 removed + udr:1 added + nsg:1 added = 4
+        assert diff["changes_count"] == 4
         assert diff["changes_by_category"]["bgp_route_change"] == 1
-        assert diff["changes_by_category"]["udr_route_change"] == 1
+        assert diff["changes_by_category"]["udr_route_change"] == 2
         assert diff["changes_by_category"]["security_rule_change"] == 1
 
     def test_multi_nic_changes_on_one_nic_only(self):
@@ -417,14 +427,15 @@ class TestComputeDiff:
         assert diff["nic_diffs"] == []
         assert diff["drift_detected"] is False
 
-    def test_unknown_route_source_defaults_to_udr(self):
-        """TC-DIFF-024: Unknown route source categorised as udr_route_change."""
+    def test_unknown_route_source_defaults_to_system_route_change(self):
+        """TC-DIFF-024: Unknown route source categorised as system_route_change (defensive fallback)."""
         unknown_route = _route("10.9.0.0/24", source="UnknownFutureSource",
                                next_hop_type="VnetLocal")
         baseline = _snap([_nic("nic-a", routes=[])])
         compare  = _snap([_nic("nic-a", routes=[unknown_route])])
         diff = compute_diff(baseline, compare)
-        assert diff["changes_by_category"].get("udr_route_change", 0) == 1
+        assert diff["changes_by_category"].get("system_route_change", 0) == 1
+        assert diff["changes_by_category"].get("udr_route_change", 0) == 0
         assert diff["changes_count"] == 1
 
     def test_reordered_nsg_list_fields_no_false_positive(self):
@@ -482,28 +493,102 @@ class TestComputeDiff:
         assert diff["skipped_nics"] == []
 
     def test_all_four_categories_in_one_diff(self):
-        """TC-BOUND-008: All four change categories can appear in a single diff."""
-        bgp  = _route("10.2.0.0/24", source="VirtualNetworkGateway",
-                      next_hop_type="VirtualNetworkGateway")
-        udr  = _route("0.0.0.0/0",   source="User",
-                      next_hop_type="VirtualAppliance", next_hop_ip="10.0.1.4")
-        udr2 = _route("0.0.0.0/0",   source="User",
-                      next_hop_type="VirtualAppliance", next_hop_ip="10.0.1.9")
-        sys_r_b = _route("10.0.0.0/16", source="Default", state="Active")
-        sys_r_c = _route("10.0.0.0/16", source="Default", state="Invalid")
-        nsg_r = _rule("deny-ssh")
+        """TC-BOUND-008: All four change categories in a single diff.
+
+        Setup: BGP removed(1) + UDR purely added(1) + system state changed(2) + NSG removed(1)
+        = changes_count 5.
+        """
+        bgp     = _route("10.2.0.0/24", source="VirtualNetworkGateway",
+                         next_hop_type="VirtualNetworkGateway")
+        udr_new = _route("172.16.0.0/12", source="User",
+                         next_hop_type="VirtualAppliance", next_hop_ip="10.0.2.1")
+        sys_b   = _route("10.0.0.0/16", source="Default", state="Active")
+        sys_c   = _route("10.0.0.0/16", source="Default", state="Invalid")
+        nsg_r   = _rule("deny-ssh")
         nsg_r.update({"sourceAddressPrefixes": [], "destinationAddressPrefixes": [],
                       "destinationPortRanges": ["22"]})
 
-        baseline = _snap([_nic("nic-a",
-            routes=[bgp, udr, sys_r_b],
-            nsg_rules=[])])
-        compare  = _snap([_nic("nic-a",
-            routes=[udr2, sys_r_c],
-            nsg_rules=[nsg_r])])
+        baseline = _snap([_nic("nic-a", routes=[bgp, sys_b],   nsg_rules=[nsg_r])])
+        compare  = _snap([_nic("nic-a", routes=[udr_new, sys_c], nsg_rules=[])])
         diff = compute_diff(baseline, compare)
         assert set(diff["changes_by_category"].keys()) == {
             "bgp_route_change", "udr_route_change",
             "system_route_change", "security_rule_change"
         }
-        assert diff["changes_count"] == 4
+        # 1 bgp removed + 1 udr added + 2 system (removed+added) + 1 nsg removed = 5
+        assert diff["changes_count"] == 5
+        assert diff["changes_by_category"]["bgp_route_change"] == 1
+        assert diff["changes_by_category"]["udr_route_change"] == 1
+        assert diff["changes_by_category"]["system_route_change"] == 2
+        assert diff["changes_by_category"]["security_rule_change"] == 1
+
+    def test_nic_absent_from_compare_fully_removed(self):
+        """TC-DIFF-021b: NIC in baseline but absent from compare → all entries are 'removed'."""
+        r1  = _route("10.0.0.0/16")
+        r2  = _route("10.1.0.0/24", source="User",
+                     next_hop_type="VirtualAppliance", next_hop_ip="10.0.1.4")
+        nsg = _rule("allow-https")
+        nsg.update({"sourceAddressPrefixes": [], "destinationAddressPrefixes": [],
+                    "destinationPortRanges": ["443"]})
+        baseline = _snap([_nic("nic-a"), _nic("nic-b", routes=[r1, r2], nsg_rules=[nsg])])
+        compare  = _snap([_nic("nic-a")])
+        diff = compute_diff(baseline, compare)
+        nic_b_diff = next(d for d in diff["nic_diffs"] if d["nic_name"] == "nic-b")
+        # 2 routes + 1 NSG rule = 3 removed changes
+        assert len(nic_b_diff["changes"]) == 3
+        assert all(c["change_type"] == "removed" for c in nic_b_diff["changes"])
+        assert "nic-b" not in diff["skipped_nics"]
+        assert diff["drift_detected"] is True
+
+    def test_expanded_source_address_prefix_used_when_non_empty(self):
+        """TC-DIFF-027: Change in expandedSourceAddressPrefix detected as drift."""
+        def _nsg_with_expanded(expanded_src):
+            return {
+                "name": "allow-vnet",
+                "priority": 100,
+                "direction": "Inbound",
+                "access": "Allow",
+                "protocol": "Tcp",
+                "sourceAddressPrefix": "VirtualNetwork",
+                "sourceAddressPrefixes": ["VirtualNetwork"],
+                "expandedSourceAddressPrefix": expanded_src,
+                "destinationAddressPrefix": "*",
+                "destinationAddressPrefixes": [],
+                "expandedDestinationAddressPrefix": [],
+                "destinationPortRange": "443",
+                "destinationPortRanges": ["443"],
+            }
+
+        rule_b = _nsg_with_expanded(["10.0.0.0/8", "10.1.0.0/16"])
+        rule_c = _nsg_with_expanded(["10.0.0.0/8", "10.2.0.0/16"])  # one CIDR changed
+
+        baseline = _snap([_nic("nic-a", nsg_rules=[rule_b])])
+        compare  = _snap([_nic("nic-a", nsg_rules=[rule_c])])
+        diff = compute_diff(baseline, compare)
+        assert diff["drift_detected"] is True
+        assert diff["changes_by_category"].get("security_rule_change", 0) >= 1
+
+    def test_expanded_source_address_prefix_fallback_when_empty(self):
+        """TC-DIFF-028: Falls back to sourceAddressPrefixes when expandedSourceAddressPrefix is empty."""
+        def _nsg_with_src(src_prefixes):
+            return {
+                "name": "allow-specific",
+                "priority": 200,
+                "direction": "Inbound",
+                "access": "Allow",
+                "protocol": "Tcp",
+                "sourceAddressPrefix": "",
+                "sourceAddressPrefixes": src_prefixes,
+                "expandedSourceAddressPrefix": [],
+                "destinationAddressPrefix": "*",
+                "destinationAddressPrefixes": [],
+                "expandedDestinationAddressPrefix": [],
+                "destinationPortRange": "443",
+                "destinationPortRanges": ["443"],
+            }
+
+        rule = _nsg_with_src(["10.5.0.0/24"])
+        baseline = _snap([_nic("nic-a", nsg_rules=[rule])])
+        compare  = _snap([_nic("nic-a", nsg_rules=[rule])])
+        diff = compute_diff(baseline, compare)
+        assert diff["drift_detected"] is False

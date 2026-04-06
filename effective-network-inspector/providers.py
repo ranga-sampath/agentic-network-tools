@@ -261,57 +261,86 @@ class AzureNetworkProvider:
             )
         raw = r.get("stdout", r["output"]).strip()
         if not raw:
-            raise ProviderError(f"No NICs found for VM {vm_name} in resource group {self._rg}")
+            return []
 
         ids: list = json.loads(raw)
         if not ids:
-            raise ProviderError(f"VM {vm_name} has no NICs in resource group {self._rg}")
+            return []
 
         # Resource ID format: .../providers/Microsoft.Network/networkInterfaces/<nic-name>
         return [rid.split("/")[-1] for rid in ids]
 
     def get_nic_names_for_vnet(self, vnet_id: str) -> list[str]:
         """
-        Return NIC names for all NICs whose subnets belong to the given VNet.
+        Return NIC names for all NICs attached to subnets within the given VNet.
 
-        Lists all NICs in the resource group and filters client-side for those
-        whose ipConfigurations reference a subnet within the VNet resource ID.
+        Uses az network vnet subnet list to enumerate subnets, then extracts NIC
+        names from ipConfigurations[].id in each subnet's response. This traversal
+        correctly discovers NICs regardless of which resource group they live in.
 
         vnet_id: full Azure resource ID of the VNet, e.g.:
             /subscriptions/.../resourceGroups/.../providers/Microsoft.Network/virtualNetworks/my-vnet
 
-        Raises RuntimeError if the az call fails.
+        Raises ProviderError if the az call fails.
         Returns an empty list (not an error) if no NICs are found in the VNet.
+
+        Note: Returns NIC names only. Cross-resource-group queries (hub-spoke) use
+        the provider's default resource_group for effective-state calls; full cross-RG
+        support (passing per-NIC RG to get_effective_routes_json) is a future enhancement.
         """
+        # Parse VNet name and resource group from the ARM resource ID
+        # Format: /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Network/virtualNetworks/{name}
+        parts = vnet_id.split("/")
+        vnet_name = parts[-1]
+        try:
+            rg_idx = next(i for i, p in enumerate(parts) if p.lower() == "resourcegroups")
+            vnet_rg = parts[rg_idx + 1]
+        except (StopIteration, IndexError):
+            vnet_rg = self._rg  # fall back to provider default if ID is malformed
+
         cmd = [
-            "az", "network", "nic", "list",
-            "--resource-group", self._rg,
+            "az", "network", "vnet", "subnet", "list",
+            "--vnet-name", vnet_name,
+            "--resource-group", vnet_rg,
             "--output", "json",
         ] + self._sub_args
         r = _execute_with_retry(self._shell, {
             "command":   cmd,
-            "reasoning": f"List NICs in resource group to find those in VNet {vnet_id.split('/')[-1]}",
-        }, operation="az network nic list")
+            "reasoning": f"List subnets in VNet {vnet_name} to discover attached NICs",
+        }, operation=f"az network vnet subnet list for {vnet_name}")
         if r["exit_code"] != 0:
-            _check_rbac(r["output"], "az network nic list")
+            _check_rbac(r["output"], f"az network vnet subnet list for {vnet_name}")
             raise ProviderError(
-                f"NIC list failed for resource group {self._rg}: {r['output'][:200]}"
+                f"Subnet list failed for VNet {vnet_name} in resource group {vnet_rg}: "
+                f"{r['output'][:200]}"
             )
 
         raw = r.get("stdout", r["output"]).strip()
         if not raw:
             return []
 
-        nics: list = json.loads(raw)
-        vnet_id_lower = vnet_id.lower()
-        matched: list[str] = []
-        for nic in nics:
-            for ip_cfg in nic.get("ipConfigurations", []):
-                subnet_id = (ip_cfg.get("subnet") or {}).get("id", "")
-                if vnet_id_lower in subnet_id.lower():
-                    matched.append(nic["name"])
-                    break  # one match per NIC is enough
-        return matched
+        subnets: list = json.loads(raw)
+        seen: set[str] = set()
+        result: list[str] = []
+        for subnet in subnets:
+            for ip_cfg in subnet.get("ipConfigurations", []):
+                ip_cfg_id = ip_cfg.get("id", "")
+                # ipConfig ID format:
+                # /subscriptions/{sub}/resourceGroups/{nic_rg}/providers/
+                #   Microsoft.Network/networkInterfaces/{nic_name}/ipConfigurations/{cfg_name}
+                id_parts = ip_cfg_id.split("/")
+                try:
+                    ni_idx = next(
+                        i for i, p in enumerate(id_parts)
+                        if p.lower() == "networkinterfaces"
+                    )
+                    nic_name = id_parts[ni_idx + 1]
+                except (StopIteration, IndexError):
+                    continue
+                if nic_name not in seen:
+                    seen.add(nic_name)
+                    result.append(nic_name)
+        return result
 
     # ------------------------------------------------------------------
     # Effective state queries — return raw JSON strings

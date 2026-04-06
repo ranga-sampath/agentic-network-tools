@@ -219,14 +219,16 @@ class TestAzureNetworkProviderCommands:
         ]
 
     def test_get_nic_names_for_vnet_correct_vector(self):
-        """az network nic list vector for VNet-scope discovery."""
+        """TC-PROV-008: az network vnet subnet list used for VNet-scope NIC discovery."""
         shell = _shell_ok("[]")
         provider = _provider(shell)
-        provider.get_nic_names_for_vnet("/subscriptions/sub/virtualNetworks/vnet-1")
+        vnet_id = "/subscriptions/sub/resourceGroups/my-rg/providers/Microsoft.Network/virtualNetworks/vnet-1"
+        provider.get_nic_names_for_vnet(vnet_id)
 
         cmd = shell.execute.call_args[0][0]["command"]
         assert cmd == [
-            "az", "network", "nic", "list",
+            "az", "network", "vnet", "subnet", "list",
+            "--vnet-name", "vnet-1",
             "--resource-group", "my-rg",
             "--output", "json",
         ]
@@ -262,12 +264,12 @@ class TestAzureNetworkProviderDiscovery:
         result = provider.get_nic_names_for_vm("my-vm")
         assert result == ["nic-a", "nic-b"]
 
-    def test_empty_nic_list_raises_runtime_error(self):
-        """TC-PROV-006: Empty NIC list raises RuntimeError identifying the VM."""
+    def test_empty_nic_list_returns_empty_list(self):
+        """TC-PROV-006: Empty NIC list returns [] — orchestrator handles empty case."""
         shell = _shell_ok("[]")
         provider = _provider(shell)
-        with pytest.raises(RuntimeError, match="my-vm"):
-            provider.get_nic_names_for_vm("my-vm")
+        result = provider.get_nic_names_for_vm("my-vm")
+        assert result == []
 
     def test_non_zero_exit_raises_runtime_error(self):
         """TC-PROV-007: Non-zero exit code raises RuntimeError."""
@@ -276,54 +278,61 @@ class TestAzureNetworkProviderDiscovery:
         with pytest.raises(RuntimeError):
             provider.get_nic_names_for_vm("missing-vm")
 
-    def test_vnet_scope_filters_by_subnet_id(self):
-        """TC-PROV-008: Only NICs whose subnet ID contains the VNet resource ID are returned."""
-        vnet_id = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/my-vnet"
-        nics = [
+    def test_vnet_scope_nic_names_from_subnet_ipconfiguration(self):
+        """TC-PROV-008: NIC names extracted from subnet ipConfigurations[].id path segments."""
+        vnet_id = "/subscriptions/sub/resourceGroups/my-rg/providers/Microsoft.Network/virtualNetworks/my-vnet"
+        # Subnet response: two subnets — first has two NICs attached, second has none
+        subnets = [
             {
-                "name": "nic-in-vnet",
-                "ipConfigurations": [{"subnet": {
-                    "id": f"{vnet_id}/subnets/subnet-1"
-                }}],
+                "name": "subnet-1",
+                "ipConfigurations": [
+                    {"id": "/subscriptions/sub/resourceGroups/my-rg/providers/Microsoft.Network"
+                           "/networkInterfaces/nic-a/ipConfigurations/ipconfig1"},
+                    {"id": "/subscriptions/sub/resourceGroups/my-rg/providers/Microsoft.Network"
+                           "/networkInterfaces/nic-b/ipConfigurations/ipconfig1"},
+                ],
             },
             {
-                "name": "nic-other-vnet",
-                "ipConfigurations": [{"subnet": {
-                    "id": "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/other-vnet/subnets/subnet-2"
-                }}],
+                "name": "subnet-2",
+                "ipConfigurations": [],  # no NICs on this subnet
             },
         ]
-        shell = _shell_ok(json.dumps(nics))
+        shell = _shell_ok(json.dumps(subnets))
         provider = _provider(shell)
         result = provider.get_nic_names_for_vnet(vnet_id)
-        assert result == ["nic-in-vnet"]
+        assert result == ["nic-a", "nic-b"]
 
-    def test_vnet_scope_case_insensitive_match(self):
-        """VNet ID match is case-insensitive (Azure resource IDs are case-insensitive)."""
-        vnet_id = "/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Network/virtualNetworks/MY-VNET"
-        nics = [{
-            "name": "nic-1",
-            "ipConfigurations": [{"subnet": {"id": vnet_id.lower() + "/subnets/s1"}}],
-        }]
-        shell = _shell_ok(json.dumps(nics))
+    def test_vnet_scope_deduplicates_nics(self):
+        """NIC appearing in multiple ipConfig entries is returned only once."""
+        vnet_id = "/subscriptions/sub/resourceGroups/my-rg/providers/Microsoft.Network/virtualNetworks/vnet-1"
+        subnets = [
+            {
+                "name": "subnet-1",
+                "ipConfigurations": [
+                    {"id": ".../networkInterfaces/nic-a/ipConfigurations/ipconfig1"},
+                    {"id": ".../networkInterfaces/nic-a/ipConfigurations/ipconfig2"},
+                ],
+            },
+        ]
+        shell = _shell_ok(json.dumps(subnets))
         provider = _provider(shell)
         result = provider.get_nic_names_for_vnet(vnet_id)
-        assert "nic-1" in result
+        assert result == ["nic-a"]
 
-    def test_vnet_scope_no_match_returns_empty_list(self):
-        """TC-PROV-009: No NICs in VNet returns [], not an error."""
-        nics = [{"name": "nic-other", "ipConfigurations": [
-            {"subnet": {"id": "/subscriptions/sub/virtualNetworks/different-vnet/subnets/s"}}
-        ]}]
-        shell = _shell_ok(json.dumps(nics))
+    def test_vnet_scope_no_ipconfiguration_returns_empty_list(self):
+        """TC-PROV-009: Subnets with no ipConfigurations → [], not an error."""
+        vnet_id = "/subscriptions/sub/resourceGroups/my-rg/providers/Microsoft.Network/virtualNetworks/vnet-1"
+        subnets = [{"name": "empty-subnet", "ipConfigurations": []}]
+        shell = _shell_ok(json.dumps(subnets))
         provider = _provider(shell)
-        result = provider.get_nic_names_for_vnet("/subscriptions/sub/virtualNetworks/my-vnet")
+        result = provider.get_nic_names_for_vnet(vnet_id)
         assert result == []
 
-    def test_vnet_scope_empty_nic_list_returns_empty(self):
+    def test_vnet_scope_empty_subnet_list_returns_empty(self):
+        vnet_id = "/subscriptions/sub/resourceGroups/my-rg/providers/Microsoft.Network/virtualNetworks/vnet-1"
         shell = _shell_ok("[]")
         provider = _provider(shell)
-        result = provider.get_nic_names_for_vnet("/subscriptions/sub/virtualNetworks/vnet")
+        result = provider.get_nic_names_for_vnet(vnet_id)
         assert result == []
 
 
@@ -390,3 +399,51 @@ class TestAzureNetworkProviderErrors:
         with pytest.raises(RuntimeError) as exc_info:
             provider.get_effective_routes_json("nic-a")
         assert "Network Contributor" not in str(exc_info.value)
+
+    def test_effective_nsg_json_unwrapped_to_flat_rule_list(self):
+        """TC-PROV-019: get_effective_nsg_json raw JSON + extract_nsg_rules gives flat rule list.
+
+        The provider returns raw JSON from az; extract_nsg_rules unwraps the nested
+        networkSecurityGroups envelope into a flat list of effective security rules.
+        Two NSG groups with two rules each → 4 rules total.
+        """
+        from diff import extract_nsg_rules
+        two_group_nsg = json.dumps({
+            "networkSecurityGroups": [
+                {"effectiveSecurityRules": [
+                    {"name": "rule-a", "priority": 100, "direction": "Inbound",
+                     "access": "Allow", "protocol": "Tcp",
+                     "sourceAddressPrefix": "*", "sourceAddressPrefixes": [],
+                     "destinationAddressPrefix": "*", "destinationAddressPrefixes": [],
+                     "destinationPortRange": "443", "destinationPortRanges": ["443"]},
+                    {"name": "rule-b", "priority": 200, "direction": "Inbound",
+                     "access": "Deny", "protocol": "*",
+                     "sourceAddressPrefix": "*", "sourceAddressPrefixes": [],
+                     "destinationAddressPrefix": "*", "destinationAddressPrefixes": [],
+                     "destinationPortRange": "*", "destinationPortRanges": []},
+                ]},
+                {"effectiveSecurityRules": [
+                    {"name": "rule-c", "priority": 100, "direction": "Outbound",
+                     "access": "Allow", "protocol": "Tcp",
+                     "sourceAddressPrefix": "*", "sourceAddressPrefixes": [],
+                     "destinationAddressPrefix": "*", "destinationAddressPrefixes": [],
+                     "destinationPortRange": "80", "destinationPortRanges": ["80"]},
+                    {"name": "rule-d", "priority": 65000, "direction": "Outbound",
+                     "access": "Deny", "protocol": "*",
+                     "sourceAddressPrefix": "*", "sourceAddressPrefixes": [],
+                     "destinationAddressPrefix": "*", "destinationAddressPrefixes": [],
+                     "destinationPortRange": "*", "destinationPortRanges": []},
+                ]},
+            ]
+        })
+        shell = MagicMock()
+        shell.execute.return_value = {
+            "status": "success", "stdout": two_group_nsg,
+            "output": two_group_nsg, "exit_code": 0, "audit_id": "local",
+        }
+        provider = _provider(shell)
+        raw_json = provider.get_effective_nsg_json("nic-a")
+        rules = extract_nsg_rules(raw_json)
+        assert len(rules) == 4
+        names = {r["name"] for r in rules}
+        assert names == {"rule-a", "rule-b", "rule-c", "rule-d"}
