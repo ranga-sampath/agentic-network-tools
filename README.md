@@ -28,6 +28,9 @@ Azure Network Watcher packet capture lifecycle manager. Handles capture creation
 ### 🔥 [Netfilter Inspector](./netfilter-inspector/)
 OS-layer firewall state capture and drift detection for Linux VMs. Retrieves `iptables`/`ip6tables` rulesets from any SSH-accessible VM (Azure, Multipass, bare-metal), stores point-in-time baseline snapshots, and diffs against a prior baseline to detect configuration drift. Classifies changes by security significance (DROP/REJECT rule additions, default policy changes) and suppresses ephemeral chain noise (Kubernetes pod chains). Covers both IPv4 and IPv6 in a single operation. Usable as a standalone CLI tool or as an integrated component of Ghost Agent for OS-layer firewall investigation scenarios.
 
+### 🌐 [Azure Effective Network Inspector](./effective-network-inspector/)
+Azure control-plane computed state capture and drift detection. Snapshots the **effective route table** (`az network nic show-effective-route-table`) and **effective NSG evaluation** (`az network nic list-effective-nsg`) per NIC — the combined subnet NSG + NIC NSG computed result that no individual NSG resource query can surface. Diffs two snapshots to detect BGP route withdrawal, UDR changes, and NSG evaluation drift that produce no ARM resource change and therefore appear in no existing Azure audit tool. Produces `drift_detected: false` as an explicit, SHA-256 verified negative confirmation — usable as a machine-readable change-record artifact. Integrated into Ghost Agent as `detect_effective_network_drift`.
+
 ---
 
 ## Quick Start
@@ -52,6 +55,17 @@ cd netfilter-inspector/firewall-inspector
 cp config.env.example config.env   # fill in VM details
 python3 firewall_inspector.py --config config.env --is-baseline --session-id pre_change
 python3 firewall_inspector.py --config config.env --compare-baseline pre_change
+
+# Snapshot Azure effective routes + NSG evaluation and compare
+cd effective-network-inspector
+python effective_network_inspector.py \
+  --scope vm --vm-name <vm-name> \
+  --resource-group <rg> \
+  --is-baseline --session-id pre_window
+python effective_network_inspector.py \
+  --scope vm --vm-name <vm-name> \
+  --resource-group <rg> \
+  --compare-baseline pre_window
 
 # Use the Safety Shell standalone
 cd agentic-safety-shell
