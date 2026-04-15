@@ -1,0 +1,1 @@
+Security team has flagged tf-dest-vm for a compliance review. The VM has been in production for 18 months and the NSG has been touched by multiple teams over that time. We need to understand what this VM is actually exposed to before the audit next week. Resource group: nw-forensics-rg.

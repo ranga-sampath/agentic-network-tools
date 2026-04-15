@@ -8,6 +8,8 @@ Usage:
 See docs/architecture.md and docs/design.md for full specification.
 """
 
+from __future__ import annotations
+
 import argparse
 import glob
 import hashlib
@@ -416,6 +418,22 @@ def _build_ghost_tools() -> types.Tool:
                     "Override the session ID for this run. "
                     "Auto-generated as fw_YYYYMMDD_HHMMSS if omitted."
                 )),
+                "vm_name": S(type=T.STRING, description=(
+                    "Name of the Azure VM to inspect. "
+                    "For outbound connectivity problems, use the SOURCE VM (the one generating "
+                    "the traffic whose OUTPUT chain may be dropping packets). "
+                    "For inbound connectivity problems, use the DESTINATION VM. "
+                    "Defaults to the configured FW_VM_NAME if omitted."
+                )),
+                "provider": S(type=T.STRING, description=(
+                    "Inspection transport: 'azure' (default) or 'ssh'. "
+                    "azure — delivers commands via Azure Wire Server (168.63.129.16:80). "
+                    "ssh   — connects directly on port 22, bypassing Wire Server entirely. "
+                    "Use 'ssh' when investigating an outbound port 80 block on the source VM: "
+                    "an iptables OUTPUT DROP --dport 80 rule blocks Wire Server communication, "
+                    "so run-command cannot reach the VM and will time out. "
+                    "SSH is unaffected by port-selective output rules."
+                )),
                 "reasoning": S(type=T.STRING, description=(
                     "One sentence explaining why this firewall probe is needed."
                 )),
@@ -466,6 +484,97 @@ def _build_ghost_tools() -> types.Tool:
                     "ID of the active hypothesis this probe is attributed to (e.g. 'H1')."
                 )),
             }, required=["reasoning"]),
+        ),
+        types.FunctionDeclaration(
+            name="effective_route_inspector",
+            description=(
+                "Apply the Azure route selection algorithm (LPM) against the effective route table "
+                "at the source VM's NIC and return a deterministic verdict. "
+                "Single-target mode (dst_ip provided): identifies which route wins for the destination IP, "
+                "why it won (LPM, source precedence, or BGP tie), and raises anomaly warnings "
+                "(BLACKHOLE_WARNING, INVALID_SHADOW_WARNING, NVA_WARNING) when present. "
+                "Audit mode (no dst_ip): scans the full effective route table for structural findings "
+                "across all prefixes. "
+                "All operations are read-only — no routes are modified. "
+                "Produces a verdict artifact prefixed rt_ in the audit directory."
+            ),
+            parameters=S(type=T.OBJECT, properties={
+                "vm_name": S(type=T.STRING, description=(
+                    "Name of the Azure VM whose effective route table will be inspected."
+                )),
+                "resource_group": S(type=T.STRING, description=(
+                    "Azure resource group containing the VM. "
+                    "Overrides the resource group in the agent config when provided."
+                )),
+                "dst_ip": S(type=T.STRING, description=(
+                    "Destination IP address for single-target LPM analysis. "
+                    "Omit to run a full audit of the effective route table."
+                )),
+                "subscription_id": S(type=T.STRING, description=(
+                    "Azure subscription ID. Overrides the subscription in the agent config when provided."
+                )),
+                "reasoning": S(type=T.STRING, description=(
+                    "One sentence explaining why the effective route verdict is needed for this investigation."
+                )),
+                "hypothesis_id": S(type=T.STRING, description=(
+                    "ID of the active hypothesis this probe is attributed to (e.g. 'H1')."
+                )),
+            }, required=["vm_name", "reasoning"]),
+        ),
+        types.FunctionDeclaration(
+            name="inspect_nsg",
+            description=(
+                "Evaluate the effective NSG security rules for an Azure VM's NIC and return a verdict "
+                "on whether a specific traffic flow is allowed or denied, or a full audit of all rules. "
+                "Queries az network nic list-effective-nsg — the computed dual-gate evaluation "
+                "(subnet NSG first for inbound, NIC NSG first for outbound). "
+                "Verdict mode: provide all five traffic flags → returns final_verdict (ALLOW/DENY/INDETERMINATE), "
+                "the decisive rule, and any unresolvable rules (service tags/ASGs not expanded). "
+                "Audit mode: omit all traffic flags → returns rule tables for all directions and findings "
+                "(shadowed rules, unresolvable rules). "
+                "All operations are read-only — no NSG rules are modified. "
+                "Produces a verdict or audit artifact prefixed nsg_ in the audit directory."
+            ),
+            parameters=S(type=T.OBJECT, properties={
+                "vm_name": S(type=T.STRING, description=(
+                    "Name of the Azure VM whose effective NSG will be inspected."
+                )),
+                "resource_group": S(type=T.STRING, description=(
+                    "Azure resource group containing the VM. "
+                    "Overrides the resource group in the agent config when provided."
+                )),
+                "src_ip": S(type=T.STRING, description=(
+                    "Source IP address for verdict mode. Omit for audit mode."
+                )),
+                "dst_ip": S(type=T.STRING, description=(
+                    "Destination IP address for verdict mode. Omit for audit mode."
+                )),
+                "dst_port": S(type=T.INTEGER, description=(
+                    "Destination TCP/UDP port (1–65535) for verdict mode. Omit for audit mode."
+                )),
+                "proto": S(type=T.STRING, description=(
+                    "Protocol for verdict mode: tcp, udp, icmp, or *. Omit for audit mode."
+                )),
+                "direction": S(type=T.STRING, description=(
+                    "Traffic direction for verdict mode: inbound or outbound. Omit for audit mode."
+                )),
+                "nic_name": S(type=T.STRING, description=(
+                    "NIC name override. If omitted, the primary NIC is resolved from the VM name."
+                )),
+                "session_id": S(type=T.STRING, description=(
+                    "Override the session ID for this run. "
+                    "Auto-generated as nsg_YYYYMMDD_HHMMSS if omitted."
+                )),
+                "subscription_id": S(type=T.STRING, description=(
+                    "Azure subscription ID. Overrides the subscription in the agent config when provided."
+                )),
+                "reasoning": S(type=T.STRING, description=(
+                    "One sentence explaining why this NSG inspection is needed for the investigation."
+                )),
+                "hypothesis_id": S(type=T.STRING, description=(
+                    "ID of the active hypothesis this probe is attributed to (e.g. 'H1')."
+                )),
+            }, required=["vm_name", "reasoning"]),
         ),
     ])
 
@@ -531,7 +640,10 @@ INVESTIGATION FRAMEWORK:
    call detect_config_drift(compare_session_id=<prior_baseline>) if a prior baseline exists,
    or detect_config_drift(is_baseline=True) to snapshot the current state — then stop and
    report the snapshot session_id so the operator can compare after the next change.
-   The provider (azure or ssh) is set in the config file — do NOT specify it in the tool call.
+   Provider defaults to the config file setting. Specify provider='ssh' explicitly when
+   the fault being investigated may block port 80 outbound on the source VM: Azure Wire Server
+   (168.63.129.16) uses port 80 for run-command delivery, so an iptables OUTPUT DROP --dport 80
+   rule prevents the probe from reaching the VM. SSH connects on port 22 and is unaffected.
 3. PACKET CAPTURE (only when local diagnostics are inconclusive AND failure is time-sensitive or intermittent):
    capture_traffic blocks until complete (download + forensic analysis done). On return:
    • status=task_completed → result contains report_path. Cat report_path directly — auto-approved (SAFE).
@@ -581,6 +693,11 @@ separate investigative thread that requires its own confirmed cause.
       present and nothing else, would this symptom occur? If the answer is no or uncertain,
       the symptom is not yet explained.
   (d) Cite the specific audit_id that provides direct evidence for this symptom.
+      For routing findings: the audit_id must be an rt_* artifact produced by
+      effective_route_inspector. Raw az CLI output (az network nic show-effective-route-table,
+      az network route-table route list) does not produce an audit artifact and does not
+      satisfy this requirement. If no rt_* artifact exists, the routing layer has not been
+      formally verified — run effective_route_inspector before closing.
   Only after completing (a)–(d) for every symptom may you call complete_investigation.
   If any symptom fails (c) or has no direct audit_id for (d), register a new hypothesis
   and continue investigating. This checklist applies regardless of confidence level —
@@ -615,6 +732,20 @@ separate investigative thread that requires its own confirmed cause.
     A stable fault (rate cap, misconfiguration) produces consistent measurements near a ceiling.
   If the symptoms in the problem statement require different fault classes to explain them,
   report them as separate, independent findings with separate recommended actions.
+- LAYERED FAULT ISOLATION — broad connectivity symptoms:
+  A fault found at one layer (routing, NSG, OS firewall) may appear to fully explain a broad
+  symptom (e.g., all internet access lost, all outbound traffic timing out). This appearance
+  does not close investigation of other layers. Two principles apply unconditionally:
+  (1) ALL symptoms must be explained. A routing fault that explains aggregate internet loss does
+      not explain why a specific protocol (e.g., HTTP port 80) remains broken after the routing
+      fault is corrected. If the problem statement names specific access patterns (HTTPS AND apt,
+      TCP AND ICMP, port 80 AND port 443), each must be attributed to a mechanism — not absorbed
+      into the aggregate.
+  (2) A fault at one layer does not close investigation of other layers. Routing, NSG, and
+      OS-layer firewall are independent state spaces. Finding a routing fault does not verify
+      OS-layer state. Finding a clean NSG does not verify OS-layer state. Each layer is either
+      positively verified (checked and clean) or unknown (not checked). Unknown is not clean.
+      A layer that is not checked must not be reported as having no fault.
 
 RESUME PROTOCOL (when is_resume=True):
 - Network state may have changed since interruption. Do NOT assume prior evidence is current.
@@ -628,6 +759,10 @@ Every baseline artifact carries a prefix that identifies its state space:
            Produced by detect_effective_network_drift. Must be compared via the same tool.
   fw_*  → OS-layer kernel state (iptables/nftables rules inside the VM guest).
            Produced by detect_config_drift. Must be compared via the same tool.
+  rt_*  → Point-in-time LPM verdict at the NIC (which route wins for a given dst_ip, and why).
+           Produced by effective_route_inspector. Not a diff — a verdict. Cannot be compared.
+  nsg_* → Point-in-time NSG evaluation result at the NIC (dual-gate verdict or full rule audit).
+           Produced by inspect_nsg. Not a diff — a verdict or audit snapshot. Cannot be compared.
 These are different state spaces. Comparing an eni_ artifact through the OS-layer tool
 does not produce a diff — it fails integrity verification because the sha256 formats
 are incompatible and the data structures have nothing in common. The converse is equally
@@ -650,11 +785,14 @@ DNS resolution failure in Azure  az network dns zone list / vnet show         ca
 Throughput degradation           run_pipe_meter(test_type="throughput")       az vm run-command on both VMs: tc qdisc show
 Latency spike / slow responses   run_pipe_meter(test_type="latency")          az vm run-command on both VMs: tc qdisc show
 Intermittent / unreliable link   run_pipe_meter(test_type="both")             az vm run-command on both VMs: tc qdisc show
-NSG/firewall suspected           az network nsg rule list --nsg-name <nsg>    az network nsg show
+NSG blocking specific flow       inspect_nsg(vm_name, src/dst/port/proto/dir) az network nsg rule list (individual NSGs)
+NSG suspected — no specific flow inspect_nsg(vm_name) — audit mode            az network nsg rule list --nsg-name <nsg>
 Routing anomaly                  az network route-table route list            capture_traffic
   → confirm with: az network nic show-effective-route-table (see ROUTE CONFIRMATION PATTERN)
-TCP port blocked                 az network nsg rule list (check deny rules)  capture_traffic
-"Is port X open on Azure VM?"    az network nsg rule list — NEVER ss/curl     capture_traffic
+TCP port blocked                 inspect_nsg(vm_name, src/dst/port/proto/dir) capture_traffic
+"Is port X open on Azure VM?"    inspect_nsg verdict mode — NEVER ss/curl     capture_traffic
+NSG verdict for known flow       inspect_nsg(vm_name, src/dst/port/proto/dir) az network nsg rule list (individual NSGs)
+NSG full rule audit              inspect_nsg(vm_name) — audit mode            detect_effective_network_drift(is_baseline)
 Azure Storage unreachable (VM)   az storage account show --query networkRuleSet  az network vnet subnet show --query serviceEndpoints
 OS firewall change suspected     detect_config_drift(provider=azure/ssh)      run_shell_cmd: az vm run-command invoke to inspect rules directly
 "Nothing changed but it broke"   detect_config_drift --compare-baseline       az network nsg rule list, then capture_traffic
@@ -664,7 +802,8 @@ Environment parity failure       detect_config_drift on both environments     co
 BGP route withdrawal suspected   detect_effective_network_drift(is_baseline/compare)  az network vnet-gateway list, then capture_traffic
 NSG effective eval drift         detect_effective_network_drift --compare-baseline     az network nsg rule list (individual NSGs)
 UDR change sign-off (Azure)      detect_effective_network_drift --compare-baseline     az network route-table route list
-Routing anomaly — NIC-level      detect_effective_network_drift(is_baseline)           az network nic show-effective-route-table (manual)
+Routing anomaly — NIC-level      detect_effective_network_drift(is_baseline)           effective_route_inspector(vm_name, dst_ip)
+LPM verdict for known dst_ip     effective_route_inspector(vm_name, dst_ip)            detect_effective_network_drift(is_baseline)
 
 STORAGE SERVICE ENDPOINT PATTERN — when a VM cannot reach an Azure Storage account:
 After checking NSG (clean) and routes (clean), ALWAYS query BOTH of the following before
@@ -683,16 +822,36 @@ investigation.
 Do NOT attempt packet capture for this class of failure — it is a control-plane configuration
 mismatch. Wire-level data cannot disambiguate it.
 
-ROUTE CONFIRMATION PATTERN — when a custom route is found in a route table:
-After az network route-table route list reveals a suspicious route, ALWAYS confirm with:
-  az network nic show-effective-route-table -g <RG> --name <NIC_NAME>
-  (Get NIC name: az vm show -g <RG> --name <VM> --query "networkProfile.networkInterfaces[0].id" -o tsv
-   then take the last path segment as the NIC name.)
-This shows the ACTIVE effective routing table on the source VM's NIC — not just what routes
-exist in the route table, but which route is actually winning. A /32 host route overrides the
-system VnetLocal route: effective-route-table will show the custom route as "Active" and the
-system VnetLocal route as "Invalid" for that prefix. This is the definitive proof that the
-custom route is redirecting traffic — stronger than listing the route table alone.
+ROUTE CONFIRMATION PATTERN — when a routing anomaly is suspected or a suspicious route is found:
+The goal is to determine which route actually wins at the NIC for the specific destination IP —
+not just what routes exist in a route table.
+
+When a destination IP is known:
+  Call effective_route_inspector(vm_name=<VM>, resource_group=<RG>, dst_ip=<dest_ip>).
+  This applies the full Azure LPM algorithm against the effective route table and returns a
+  structured verdict with the winning route, selection reason, and anomaly warnings
+  (BLACKHOLE_WARNING, NVA_WARNING, INVALID_SHADOW_WARNING). The verdict artifact is the
+  audit_id for the pre-completion checklist — manual az CLI output is not.
+
+When no specific destination IP is stated but the symptom implies one:
+  Derive the dst_ip from the symptom before falling back to raw az CLI.
+  Examples:
+    internet access lost → use 8.8.8.8 (any public IP is a valid representative)
+    cannot reach another VM → resolve that VM's private IP, use it as dst_ip
+    cannot reach a service endpoint → use the service's IP or a known IP in its range
+  In all these cases, a dst_ip is derivable — call effective_route_inspector with it.
+
+When no destination IP can be derived from the symptom:
+  Fall back to the manual az CLI sequence:
+    az network nic show-effective-route-table -g <RG> --name <NIC_NAME>
+    (Get NIC name: az vm show -g <RG> --name <VM> --query
+     "networkProfile.networkInterfaces[0].id" -o tsv — take the last path segment.)
+  This shows the raw effective routing table. Use it to identify candidate prefixes,
+  then call effective_route_inspector with a specific dst_ip derived from the investigation.
+
+The distinction matters: az network route-table route list shows configured routes, not
+what is winning. effective_route_inspector shows what Azure actually selects and why.
+A /32 User route overriding a /16 Default route is invisible from route table queries alone.
 
 NEVER use ss, curl, nc, ping, or traceroute to diagnose Azure VM connectivity.
 These run on the engineer's LOCAL machine and cannot reach Azure private IPs.
@@ -762,6 +921,22 @@ KEY RULE: [LOCAL] results NEVER override [CLOUD] API or PCAP findings.
    same investigation. That produces a trivially empty diff (nothing can change in seconds) and
    is not evidence. A compare is only valid against a baseline from a prior run or change window.
    Use this when Azure NSG and route checks are clean and traffic is still unexpectedly blocked.
+   VM SELECTION — which VM to inspect:
+   Outbound connectivity problem (VM cannot reach internet or another host):
+     Inspect the SOURCE VM — the one generating the traffic. The iptables OUTPUT chain on the
+     source VM is where outbound packets are filtered before they leave. Do not inspect the
+     destination VM — it receives no packet if the source drops it first.
+   Inbound connectivity problem (VM cannot be reached from outside):
+     Inspect the DESTINATION VM — the one receiving the traffic. The iptables INPUT chain on the
+     destination VM determines whether arriving packets are accepted.
+   When the problem statement names a specific VM experiencing the failure, that is the VM to
+   inspect — not the other end of the connection.
+   PROVIDER SELECTION — azure vs ssh:
+   Default is provider=azure, which uses Azure Wire Server (168.63.129.16:80) to deliver
+   commands. If the symptom includes port 80 outbound blocking on the SOURCE VM (e.g., apt
+   hangs, HTTP to internet fails while HTTPS passes), specify provider=ssh. An iptables
+   OUTPUT DROP --dport 80 rule blocks Wire Server traffic, causing run-command to time out.
+   SSH connects on port 22 and is not affected by port-selective output rules.
    EXPLAIN PARAMETER — when to use:
    - WHEN a compare_session_id diff returns has_critical_changes=true: proceed to explain
      those changes by calling detect_config_drift(explain=True, compare_session_id=<same_id>, ...).
@@ -813,6 +988,112 @@ KEY RULE: [LOCAL] results NEVER override [CLOUD] API or PCAP findings.
    drift_detected=false is positive evidence — the effective network state is unchanged.
    Requires Network Contributor (not Reader) on the resource group.
    If the tool returns an RBAC error, report it and stop — do not retry with different args.
+
+8. EFFECTIVE ROUTE LPM VERDICT (effective_route_inspector):
+   Computes the deterministic route selection outcome at the source VM's NIC for a given
+   destination IP. Applies the Azure route selection algorithm in Python: CIDR containment,
+   then Longest Prefix Match (LPM), then source precedence (User > VirtualNetworkGateway >
+   Default), then BGP tie detection. This is a point-in-time verdict, not a diff.
+   The distinction from detect_effective_network_drift: that tool answers "did routing state
+   change?"; this tool answers "which route wins right now, and does it produce anomalous
+   forwarding behaviour?"
+
+   TWO MODES:
+   - Single-target (dst_ip provided): applies LPM against the effective route table for the
+     specific destination IP. Returns a verdict, the winning route, and anomaly warnings.
+     This is the preferred mode when investigating a connectivity failure to a known destination.
+   - Audit (no dst_ip): scans the full effective route table for structural findings — blackhole
+     routes, NVA routes, BGP route count, whether a default route is present.
+     Use this only when no specific destination is in scope.
+
+   When the problem names a destination VM rather than a bare IP, resolve its private IP first:
+     az vm show -g <RG> --name <dest-vm> --query "networkProfile.networkInterfaces[0].id" -o tsv
+     az network nic show -g <RG> --name <NIC> --query "ipConfigurations[0].privateIpAddress" -o tsv
+   Then pass that IP as dst_ip. Single-target mode returns a structured verdict and anomaly
+   warnings; audit mode returns a raw table that requires manual reasoning to reach the same
+   conclusion — and it reports system-blocked routes (Azure Default None routes) as a separate
+   category from operator-configured blackholes (User None routes).
+
+   Verdict schema — single-target mode:
+     result          — WINNER (one route won), NO_ROUTE (no active route covers dst_ip),
+                       TIED_BGP (two VirtualNetworkGateway routes tied; AS Path not available)
+     winning_route   — prefix, next_hop_type, source, state of the winning route
+     selection_reason — why this route won (LPM, source-precedence, or tie)
+     anomaly_warnings — list of anomaly codes present on the winning route:
+       BLACKHOLE_WARNING      — next_hop_type is None; Azure silently drops all traffic to
+                                this prefix. This is a definitive mechanism, not a hypothesis.
+       INVALID_SHADOW_WARNING — a higher-priority Invalid route exists for the same or more-
+                                specific prefix; the active path may not be the intended path
+       NVA_WARNING            — next_hop_type is VirtualAppliance; verify the appliance is
+                                forwarding and that the return path does not bypass it
+
+   How to apply verdicts in the pre-completion checklist:
+   - WINNER + BLACKHOLE_WARNING: the mechanism is identified and sufficient. next_hop_type=None
+     on the winning prefix is the cause of silent drops. Cite session_id as the audit_id.
+     No further routing investigation is warranted.
+   - NO_ROUTE: the mechanism is identified. Azure has no active route and drops the traffic.
+     Cite session_id as the audit_id.
+   - WINNER + no anomaly: routing is functioning as configured. Rule out routing as the cause;
+     continue the investigation at the next evidence layer.
+   - TIED_BGP: routing outcome cannot be determined from the effective route table alone —
+     the selection depends on BGP AS Path not visible here. Escalate to VPN/ExpressRoute
+     gateway investigation before concluding.
+   - WINNER + INVALID_SHADOW_WARNING: routing is not broken today, but an Invalid higher-priority
+     route exists. Investigate whether the invalid state is intentional or a sign of a deleted NVA.
+
+   Artifact prefix: rt_. Requires Network Contributor (not Reader) on the resource group.
+   If the tool returns an RBAC error, report it and stop — do not retry with different args.
+
+9. NSG EFFECTIVE RULE VERDICT (inspect_nsg):
+   Evaluates the dual-gate NSG model at the VM's NIC and returns either a verdict on a specific
+   traffic flow or a full audit of all effective rules. This is the preferred tool whenever the
+   problem statement contains a specific source IP, destination IP, port, protocol, and direction —
+   it produces a deterministic machine-evaluated answer that az network nsg rule list cannot,
+   because that command returns individual NSG rules without applying the dual-gate evaluation order
+   (subnet NSG first for inbound; NIC NSG first for outbound) or resolving which gate actually wins.
+
+   Use inspect_nsg instead of az network nsg rule list when:
+   - A specific traffic flow is in scope (all five of: src_ip, dst_ip, dst_port, proto, direction
+     are known) — use verdict mode for a machine-evaluated ALLOW/DENY/INDETERMINATE result.
+   - The investigation requires a full inventory of effective rules across both gates and both
+     directions — use audit mode (omit all traffic flags).
+   - An earlier az network nsg rule list result is inconclusive because subnet and NIC NSGs both
+     have rules and it is unclear which gate wins.
+
+   TWO MODES:
+   - Verdict (all five traffic flags provided): evaluates gate 1 then gate 2 in the correct
+     direction-dependent order, stops at the first decisive rule, and returns final_verdict.
+     This is the preferred mode when a specific flow is in scope.
+   - Audit (no traffic flags): returns the full rule table for all four gate/direction combinations
+     and findings (shadowed rules, permissive rules, unresolvable rules). Use when no specific
+     flow is in scope or when the operator asks for a rule inventory.
+
+   Verdict schema — verdict mode:
+     final_verdict     — ALLOW, DENY, or INDETERMINATE
+     decisive_rule     — name and priority of the rule that produced ALLOW or DENY
+     gate1 / gate2     — per-gate result: verdict, decisive_rule or unresolvable_rule, evaluated flag
+     unresolvable_rules — rules that halted evaluation because their address field is a service tag
+                          or ASG that was not expanded to CIDRs; verdict cannot be determined
+     parse_warnings    — non-fatal issues during preprocessing (e.g. missing association field)
+
+   How to apply verdicts in the pre-completion checklist:
+   - ALLOW with decisive_rule present: an NSG rule explicitly permitted the flow. NSG is not
+     the blocking mechanism. Rule out NSG as the cause; continue the investigation at the next
+     evidence layer (routing, OS firewall, application).
+   - ALLOW with no decisive_rule (gate has no NSG associated): the gate imposes no restriction.
+     This is structurally different from an explicit permit — it means no NSG is attached to
+     that subnet or NIC. Note this in the finding. It may be an intended posture or a gap.
+   - DENY: the mechanism is identified and sufficient. Name the decisive_rule (rule name +
+     priority + gate) in the finding. Remediation must name the specific rule to remove or modify.
+     No further NSG investigation is warranted.
+   - INDETERMINATE: evaluation halted at a service tag or ASG that could not be resolved to CIDRs.
+     The unresolvable_rules list names the specific rules. Report INDETERMINATE as the finding —
+     do NOT assume ALLOW or DENY. The operator must expand the service tag or ASG out-of-band
+     (e.g. az network list-service-tags) and re-run or reason manually. Do NOT retry inspect_nsg
+     with different args — the limitation is the unresolved address, not a tool error.
+   - RBAC error: report it and stop. Do not retry with different args.
+
+   Artifact prefix: nsg_. Requires Network Contributor (not Reader) on the resource group.
 
 CONFLICT RESOLUTION:
 When two results contradict, trust the higher-fidelity source. State explicitly which result you
@@ -1344,27 +1625,58 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
     provider = tool_args.get("provider") or ghost_cfg.get("PROVIDER", "azure")
     audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
 
+    # Determine if this SSH probe targets the source VM (not the default FW target).
+    # Azure Wire Server uses port 80; an OUTPUT DROP --dport 80 rule on the source VM
+    # blocks run-command delivery, making provider=azure time out. SSH on port 22 is
+    # unaffected. When the agent passes provider=ssh with vm_name=<source vm>, resolve
+    # the source VM's public IP and key from config rather than the FW target defaults.
+    vm_name_arg = tool_args.get("vm_name", "")
+    source_vm_name = ghost_cfg.get("SOURCE_VM_NAME", "")
+    _ssh_for_source = (
+        provider == "ssh"
+        and bool(vm_name_arg)
+        and bool(source_vm_name)
+        and vm_name_arg == source_vm_name
+    )
+
+    if _ssh_for_source:
+        ssh_user = ghost_cfg.get("SSH_USER", "azureuser")
+    else:
+        ssh_user = ghost_cfg.get("FW_SSH_USER") or ghost_cfg.get("SSH_USER", "azureuser")
+
     config_lines = [
         f'PROVIDER={provider}',
         f'AUDIT_DIR={audit_dir}',
         f'FAMILY=both',
-        f'SSH_USER={ghost_cfg.get("FW_SSH_USER") or ghost_cfg.get("SSH_USER", "azureuser")}',
+        f'SSH_USER={ssh_user}',
     ]
     if provider == "azure":
-        vm_name = ghost_cfg.get("FW_VM_NAME") or ghost_cfg.get("DEST_VM_NAME", "")
+        vm_name = (vm_name_arg
+                   or ghost_cfg.get("FW_VM_NAME")
+                   or ghost_cfg.get("DEST_VM_NAME", ""))
         config_lines += [
             f'VM_NAME={vm_name}',
             f'RESOURCE_GROUP={ghost_cfg.get("RESOURCE_GROUP", "")}',
         ]
     else:
+        if _ssh_for_source:
+            target_ip = ghost_cfg.get("SOURCE_VM_PUBLIC_IP", "")
+            ssh_key = ghost_cfg.get("SSH_SOURCE_VM_KEY_PATH",
+                                    ghost_cfg.get("SSH_KEY_PATH", ""))
+        else:
+            target_ip = ghost_cfg.get("FW_TARGET_VM_IP", "")
+            ssh_key = ghost_cfg.get("FW_SSH_KEY_PATH",
+                                    ghost_cfg.get("SSH_KEY_PATH", ""))
         config_lines += [
-            f'TARGET_VM_IP={ghost_cfg.get("FW_TARGET_VM_IP", "")}',
-            f'TARGET_SSH_KEY_PATH={ghost_cfg.get("FW_SSH_KEY_PATH", ghost_cfg.get("SSH_KEY_PATH", ""))}',
+            f'TARGET_VM_IP={target_ip}',
+            f'TARGET_SSH_KEY_PATH={ssh_key}',
         ]
         if ghost_cfg.get("FW_BASTION_PUBLIC_IP"):
             config_lines.append(f'BASTION_PUBLIC_IP={ghost_cfg["FW_BASTION_PUBLIC_IP"]}')
         if ghost_cfg.get("FW_BASTION_SSH_KEY_PATH"):
             config_lines.append(f'BASTION_SSH_KEY_PATH={ghost_cfg["FW_BASTION_SSH_KEY_PATH"]}')
+        if ghost_cfg.get("FW_BASTION_SSH_USER"):
+            config_lines.append(f'BASTION_SSH_USER={ghost_cfg["FW_BASTION_SSH_USER"]}')
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".env", delete=False) as tmp:
         tmp.write("\n".join(config_lines) + "\n")
@@ -1588,6 +1900,114 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         return result
 
 
+def _run_security_rule_inspector_handler(config: dict) -> dict:
+    """Invoke security_rule_inspector.py as a subprocess and return the verdict/audit result.
+
+    config keys:
+      vm_name, resource_group, session_id, audit_dir — always required
+      src_ip, dst_ip, dst_port, proto, direction     — verdict mode (all five required)
+      nic_name                                        — optional NIC override
+      subscription_id                                 — optional
+    """
+    import subprocess
+
+    sri_path = _ROOT / "security-rule-inspector" / "security_rule_inspector.py"
+    if not sri_path.exists():
+        return {"status": "error", "error": f"security_rule_inspector.py not found at {sri_path}"}
+
+    vm_name        = config.get("vm_name", "")
+    resource_group = config.get("resource_group", "")
+    audit_dir      = config.get("audit_dir", DEFAULT_AUDIT_DIR)
+
+    # Determine mode from presence of traffic flags.
+    # dst_port is an integer — use explicit None check, not truthiness, so port 443 is not
+    # treated as absent. Port 0 is excluded separately: it is outside the valid 1–65535 range
+    # and must not silently enter verdict mode (the CLI would reject it with exit 2).
+    #
+    # For inbound verdict mode, --dst-ip may be omitted: security_rule_inspector.py derives
+    # it from the VM's NIC IP after resolution.  All other four traffic flags must be present.
+    str_fields  = ["src_ip", "dst_ip", "proto", "direction"]
+    provided    = [f for f in str_fields if config.get(f) is not None]
+    port_val    = config.get("dst_port")
+    port_valid  = port_val is not None and port_val != 0
+    if port_valid:
+        provided.append("dst_port")
+
+    if len(provided) == 5:
+        mode = "verdict"
+    elif (len(provided) == 4
+          and config.get("src_ip") is not None
+          and config.get("dst_ip") is None
+          and config.get("proto") is not None
+          and (config.get("direction") or "").lower() == "inbound"
+          and port_valid):
+        mode = "verdict"   # inbound verdict; dst_ip derived from VM's NIC by inspector
+    elif len(provided) == 0:
+        mode = "audit"
+    else:
+        return {"status": "error",
+                "error": f"Verdict mode requires all five traffic flags; got {len(provided)}"}
+
+    # Enforce nsg_ prefix on session_id (T-GH-06)
+    raw_session = config.get("session_id") or ""
+    if raw_session:
+        session_id = raw_session if raw_session.startswith("nsg_") else "nsg_" + raw_session
+    else:
+        session_id = "nsg_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    cmd = [
+        sys.executable, str(sri_path),
+        "--vm-name",        vm_name,
+        "--resource-group", resource_group,
+        "--session-id",     session_id,
+        "--audit-dir",      audit_dir,
+    ]
+
+    if mode == "verdict":
+        cmd += [
+            "--src-ip",    str(config["src_ip"]),
+            "--dst-port",  str(config["dst_port"]),
+            "--proto",     str(config["proto"]),
+            "--direction", str(config["direction"]),
+        ]
+        if config.get("dst_ip") is not None:
+            cmd += ["--dst-ip", str(config["dst_ip"])]
+
+    if config.get("nic_name"):
+        cmd += ["--nic-name", config["nic_name"]]
+
+    if config.get("subscription_id"):
+        cmd += ["--subscription-id", config["subscription_id"]]
+
+    try:
+        # Inherit stdout so the operator sees progress ("Resolving primary NIC…" etc.)
+        # during the 20–40s az CLI call. Capture stderr only so it can be forwarded on failure.
+        proc = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "security_rule_inspector timed out after 300 seconds"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+    # Determine expected artifact path
+    suffix   = "_verdict.json" if mode == "verdict" else "_audit.json"
+    artifact = Path(audit_dir) / f"{session_id}{suffix}"
+
+    if not artifact.exists():
+        return {
+            "status":    "error",
+            "error":     f"security_rule_inspector exited with code {proc.returncode} — no artifact produced",
+            "exit_code": proc.returncode,
+            "stderr":    proc.stderr or "",
+        }
+
+    try:
+        data = json.loads(artifact.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"status": "error", "error": f"Failed to parse artifact {artifact}: {exc}"}
+
+    return data
+
+
 def _run_effective_network_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
     """Invoke effective_network_inspector.py as a subprocess and return the drift result."""
     import subprocess
@@ -1689,6 +2109,91 @@ def _run_effective_network_inspector_handler(ghost_cfg: dict, tool_args: dict) -
         }
 
 
+def _run_effective_route_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
+    """Invoke effective_route_inspector.py as a subprocess and return the verdict."""
+    import subprocess
+
+    eri_path = _ROOT / "effective-route-inspector" / "effective_route_inspector.py"
+    if not eri_path.exists():
+        return {"status": "error", "error": f"effective_route_inspector.py not found at {eri_path}"}
+
+    vm_name = tool_args.get("vm_name") or ghost_cfg.get("VM_NAME", "")
+    if not vm_name:
+        return {"status": "error", "error": "vm_name is required for effective_route_inspector"}
+
+    resource_group = tool_args.get("resource_group") or ghost_cfg.get("RESOURCE_GROUP", "")
+    if not resource_group:
+        return {"status": "error", "error": "resource_group is required for effective_route_inspector"}
+
+    audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
+
+    cmd = [
+        sys.executable,
+        str(eri_path),
+        "--vm-name",        vm_name,
+        "--resource-group", resource_group,
+        "--audit-dir",      audit_dir,
+    ]
+
+    dst_ip = tool_args.get("dst_ip")
+    if dst_ip:
+        cmd += ["--dst-ip", dst_ip]
+
+    subscription_id = tool_args.get("subscription_id") or ghost_cfg.get("SUBSCRIPTION_ID")
+    if subscription_id:
+        cmd += ["--subscription-id", subscription_id]
+
+    start_time = time.time()
+    try:
+        proc = subprocess.run(cmd, timeout=120)
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "effective_route_inspector timed out after 120 seconds"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+    if proc.returncode != 0:
+        return {"status": "error",
+                "error": "effective_route_inspector exited with code 2 — no verdict produced",
+                "exit_code": proc.returncode}
+
+    verdicts = sorted(
+        [p for p in Path(audit_dir).glob("rt_*_verdict.json")
+         if p.stat().st_mtime >= start_time - 1],
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not verdicts:
+        return {"status": "error",
+                "error": "effective_route_inspector did not produce a verdict artifact",
+                "exit_code": proc.returncode}
+
+    verdict_path = verdicts[-1]
+    try:
+        verdict_data = json.loads(verdict_path.read_text())
+    except Exception as exc:
+        return {"status": "error", "error": f"Failed to parse verdict artifact: {exc}"}
+
+    result: dict = {
+        "status":     "success",
+        "artifact":   str(verdict_path),
+        "session_id": verdict_data.get("session_id", ""),
+        "mode":       verdict_data.get("mode", ""),
+        "result":     verdict_data.get("result", ""),
+    }
+    if verdict_data.get("mode") == "single-target":
+        result["winning_route"]       = verdict_data.get("winning_route")
+        result["anomaly_warnings"]    = verdict_data.get("anomaly_warnings") or []
+        result["selection_reason"]    = verdict_data.get("selection_reason", "")
+        result["shadowed_candidates"] = verdict_data.get("shadowed_candidates") or []
+        result["tied_routes"]         = verdict_data.get("tied_routes") or []
+    elif verdict_data.get("mode") == "audit":
+        result["route_count"]         = verdict_data.get("route_count", 0)
+        result["invalid_route_count"] = verdict_data.get("invalid_route_count", 0)
+        result["findings"]            = verdict_data.get("findings") or {}
+    if verdict_data.get("parse_warnings"):
+        result["parse_warnings"] = verdict_data["parse_warnings"]
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Tool dispatch
 # ---------------------------------------------------------------------------
@@ -1737,6 +2242,29 @@ def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator,
         if not ghost_cfg:
             return {"status": "error", "error": "detect_effective_network_drift requires --config to be set at startup"}
         return _run_effective_network_inspector_handler(ghost_cfg, tool_args)
+
+    if tool_name == "effective_route_inspector":
+        if not ghost_cfg:
+            return {"status": "error", "error": "effective_route_inspector requires --config to be set at startup"}
+        return _run_effective_route_inspector_handler(ghost_cfg, tool_args)
+
+    if tool_name == "inspect_nsg":
+        if not ghost_cfg:
+            return {"status": "error", "error": "inspect_nsg requires --config to be set at startup"}
+        config = {
+            "vm_name":         tool_args.get("vm_name") or ghost_cfg.get("VM_NAME", ""),
+            "resource_group":  tool_args.get("resource_group") or ghost_cfg.get("RESOURCE_GROUP", ""),
+            "src_ip":          tool_args.get("src_ip"),
+            "dst_ip":          tool_args.get("dst_ip"),
+            "dst_port":        tool_args.get("dst_port"),
+            "proto":           tool_args.get("proto"),
+            "direction":       tool_args.get("direction"),
+            "nic_name":        tool_args.get("nic_name"),
+            "session_id":      tool_args.get("session_id"),
+            "subscription_id": tool_args.get("subscription_id") or ghost_cfg.get("SUBSCRIPTION_ID"),
+            "audit_dir":       ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR),
+        }
+        return _run_security_rule_inspector_handler(config)
 
     return {"status": "error", "error": "unknown_tool", "tool": tool_name}
 

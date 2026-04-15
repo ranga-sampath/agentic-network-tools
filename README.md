@@ -31,6 +31,12 @@ OS-layer firewall state capture and drift detection for Linux VMs. Retrieves `ip
 ### 🌐 [Effective Network Inspector](./effective-network-inspector/)
 Azure control-plane computed state capture and drift detection. Snapshots the **effective route table** (`az network nic show-effective-route-table`) and **effective NSG evaluation** (`az network nic list-effective-nsg`) per NIC — the combined subnet NSG + NIC NSG computed result that no individual NSG resource query can surface. Diffs two snapshots to detect BGP route withdrawal, UDR changes, and NSG evaluation drift that produce no ARM resource change and therefore appear in no existing Azure audit tool. Produces `drift_detected: false` as an explicit, SHA-256 verified negative confirmation — usable as a machine-readable change-record artifact. Integrated into Ghost Agent as `detect_effective_network_drift`.
 
+### 🔐 [Security Rule Inspector](./security-rule-inspector/)
+Point-in-time Azure NSG effective rule evaluator. Applies the **dual-gate model** (`az network nic list-effective-nsg`) to produce a machine-evaluated verdict for a specific traffic flow (ALLOW / DENY / INDETERMINATE) or a full inbound/outbound rule inventory for compliance audits. Correctly handles the inbound evaluation order — subnet NSG at Gate 1, NIC NSG at Gate 2 — which the Azure portal does not surface. Returns the decisive rule, the gate it fired at, and any unresolvable service tags. Integrated into Ghost Agent as `inspect_nsg`.
+
+### 🗺️ [Effective Route Inspector](./effective-route-inspector/)
+Deterministic Azure route selection engine. Queries the effective route table at the VM NIC, runs the full Azure LPM algorithm in pure Python (CIDR containment → longest prefix match → source precedence: User > VirtualNetworkGateway > Default → BGP tie-break), and returns a structured verdict naming the winning route, its source tier, and any anomalies (BLACKHOLE, INVALID_SHADOW, NVA). No AI in the analysis path — deterministic end to end. Integrated into Ghost Agent as `effective_route_inspector` for routing-layer fault investigation.
+
 ---
 
 ## Quick Start

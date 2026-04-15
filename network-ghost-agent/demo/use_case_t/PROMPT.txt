@@ -1,0 +1,1 @@
+tf-source-vm has lost all internet access. Both apt updates and HTTPS calls to external APIs are timing out — no errors, just silence. NSG looks clean, no outbound deny rules. We do have a route table on the subnet that was set up to send egress through an NVA for compliance monitoring, but I haven't changed it. This is blocking deployments. Resource group: nw-forensics-rg.

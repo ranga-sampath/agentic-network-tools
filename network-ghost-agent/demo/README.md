@@ -754,6 +754,179 @@ Paste the prompt from `demo/use_case_r/PROMPT.txt`.
 
 ---
 
+## Use Case S — "The Accidental Blackhole"
+**User UDR /32 blackhole — NSG is clean, VM-to-VM traffic silently dropped | ~8 minutes**
+
+### What this shows
+- A User-defined `/32` host route with `nextHopType=None` wins Azure route selection by LPM — silently discarding every packet destined for `tf-dest-vm`
+- NSG audit is completely clean on both VMs — the routing fault is invisible to NSG inspection
+- `effective_route_inspector` returns `BLACKHOLE_WARNING` with the winning route named and sourced: `DEST_VM_PRIVATE_IP/32 [User] → None`
+- Investigation closes at the route verdict — no packet capture needed
+- Azure route selection mechanics made visible: User tier 1 beats Default VnetLocal tier 3 unconditionally at equal or longer prefix length
+
+### Before the session
+```bash
+chmod +x demo/use_case_s/setup.sh demo/use_case_s/teardown.sh
+./demo/use_case_s/setup.sh
+# Wait 30 seconds for effective route table to update on source-vm NIC, then start
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_s/PROMPT.txt`.
+
+### What to narrate while it runs
+- **NSG audit — both VMs clean:** "Completely clean NSGs. No deny rules on either side. The Azure portal would stop here. The agent doesn't — it knows routing operates at a layer below the NSG."
+- **`effective_route_inspector` fires:** "This is the Azure route selection algorithm running in pure Python. It queries the effective route table at the source NIC, filters candidates by CIDR containment for the destination IP, and applies LPM → source precedence → BGP tie-break."
+- **Verdict: WINNER → `DEST_VM_PRIVATE_IP/32 [User] → None` + BLACKHOLE_WARNING:** "The `/32` User-defined route wins. LPM: longest prefix wins unconditionally. Source tier: User is tier 1, higher priority than any Default route. And the next hop is `None` — Azure SDN receives the packet and discards it. Silently."
+- **The key insight:** "The route was added this morning as part of a hardening exercise. The admin set `nextHopType=None` — possibly intending to add an NVA next-hop and forgot, or as a placeholder. The specificity of the `/32` is exactly what makes it lethal: the more precise the route, the harder Azure will work to use it."
+- **Pre-completion checklist closes:** "Symptom: silent drops. Mechanism: `nextHopType=None` on the winning User `/32` route. The `rt_*` audit artifact has the exact route name and source. One fix: remove or correct the blackhole route in `ghost-demo-s-rt`."
+- **Money moment:** "No packet capture. No SSH into the VM. No OS-layer inspection. The entire investigation is Azure control-plane state — the kind of forensics that should take seconds but typically takes hours because no single Azure tool runs the route selection algorithm for you."
+
+### After the demo
+```bash
+./demo/use_case_s/teardown.sh
+```
+
+---
+
+## Use Case T — "The Phantom Firewall"
+**Phantom NVA routing blackhole + iptables port 80 — two independent faults, two-phase investigation | ~15 minutes**
+
+### What this shows
+- Two completely independent faults that require two separate prompts to surface — demonstrating iterative fault investigation
+- Fault 1 (routing layer): A `0.0.0.0/0 → VirtualAppliance` UDR pointing at a phantom IP that has no registered NIC — Azure reflects it as `nextHopType=None`, dropping all internet-bound traffic
+- Fault 2 (OS layer): An `iptables OUTPUT DROP --dport 80` rule on `tf-source-vm` left behind by a penetration tester — selectively blocking HTTP while HTTPS passes
+- Phase 1 closes correctly at the routing fault — it fully explains the symptom at that point
+- Phase 2 opens when the changed symptom (HTTPS restored, `apt` still hangs) carries a different fault signature — the agent reaches the OS layer through reasoning, not prescription
+
+### Before the session
+```bash
+chmod +x demo/use_case_t/setup.sh demo/use_case_t/teardown.sh \
+         demo/use_case_t/fix_fault1.sh
+./demo/use_case_t/setup.sh
+# Both faults active: phantom NVA UDR on subnet + iptables OUTPUT DROP port 80 on source VM
+```
+
+### Run the demo
+
+**Phase 1 — routing layer:**
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_t/PROMPT.txt`.
+
+### What to narrate while it runs (Phase 1)
+- **NSG audit — clean:** "No outbound deny rules. The routing fault is invisible to NSG inspection — a recurring theme."
+- **`effective_route_inspector` fires:** "Destination IP: `8.8.8.8`. The agent derives this from the symptom — 'all internet access lost' implies any public IP is a valid representative. No specific dst_ip was given; the agent doesn't fall back to raw CLI queries."
+- **Verdict: WINNER → `0.0.0.0/0 [User] → None` + BLACKHOLE_WARNING:** "The User-defined default route wins. Source tier: User (tier 1) beats the system Internet route (tier 3). Next hop: `None` — the phantom NVA IP has no registered NIC in Azure, so SDN reflects it as a black hole. Every internet-bound packet from this subnet is silently discarded."
+- **Phase 1 closes:** "Recommended action: disassociate `ghost-demo-t-rt` from the subnet. This is the correct answer at this point — routing is the complete explanation for total internet loss."
+
+**[Between phases: run `./demo/use_case_t/fix_fault1.sh`]**
+
+```bash
+# Simulate the operator applying the recommended fix
+./demo/use_case_t/fix_fault1.sh
+# Routing restored. iptables OUTPUT DROP port 80 still active on tf-source-vm.
+```
+
+**Phase 2 — OS layer:**
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_t/PROMPT2.txt`.
+
+### What to narrate while it runs (Phase 2)
+- **Changed symptom:** "The prompt is different now. HTTPS API calls are working — routing is confirmed clean. But `apt update` still hangs. That's HTTP: port 80."
+- **`effective_route_inspector` confirms routing is clean:** "Winner: `0.0.0.0/0 [Default] → Internet`. The default system Internet route now wins — the User UDR is gone. Routing is verified clean."
+- **Fault-class reasoning fires:** "HTTPS passes, HTTP fails. Selective block on one protocol at the same destination. That signature is not routing — routing is prefix-based and protocol-agnostic. This is a port-selective block. The only layers that can do this are NSG (checked clean) or OS-layer firewall."
+- **`detect_config_drift` fires with `provider=ssh`:** "The agent passes `provider=ssh`, not the default `provider=azure`. This is the key move. Azure Wire Server — the mechanism run-command uses to deliver commands to the VM — uses port 80. The very rule being investigated blocks it. If the agent used `provider=azure`, the probe would time out waiting for Wire Server to respond. SSH connects on port 22. The iptables rule doesn't touch it."
+- **Verdict: `blocking_rules: [{chain: OUTPUT, protocol: tcp, dst_port: 80, target: DROP}]`:** "There it is. An iptables OUTPUT DROP on port 80. A penetration tester added this rule and never removed it. Azure has zero visibility into kernel-level output chains."
+- **Money moment:** "Phase 1 was a complete investigation — it was right. Phase 2 was also a complete investigation — it was right. The two-phase structure is not a flaw. Fault investigation is inherently iterative: you fix what you find, then you find what remains. The agent reached the OS layer not because it was told to, but because the changed symptom carried an unambiguous signature."
+
+### After the demo
+```bash
+./demo/use_case_t/teardown.sh
+```
+
+---
+
+## Use Case U — "The Hidden Gate"
+**Subnet NSG evaluated before NIC NSG — portal shows all ALLOW, traffic is still blocked | ~10 minutes**
+
+### What this shows
+- The dual-gate NSG evaluation model made visible: subnet NSG evaluated first for inbound, NIC NSG second
+- `inspect_nsg` in verdict mode produces `final_verdict: DENY` with `decisive_rule` pointing to the subnet NSG rule at gate1
+- Gate 2 (NIC NSG) is never evaluated — even though it shows `AllowVnetInBound` in the portal
+- Direct machine-evaluated ALLOW/DENY/INDETERMINATE for a specific flow — not a rule list for the operator to interpret manually
+
+### Before the session
+```bash
+chmod +x demo/use_case_u/setup.sh demo/use_case_u/teardown.sh
+./demo/use_case_u/setup.sh
+# Wait 30 seconds for subnet NSG effective rules to propagate, then start
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_u/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Hypothesis formation:** "Timeout with no RST — that's a DROP or a routing black hole, not a REJECT. Recent subnet work narrows the hypothesis to the network path. The agent has the source IP and the destination VM name — it derives the destination IP from the NIC automatically."
+- **`inspect_nsg` fires (verdict mode):** "Watch the derive step: 'Resolving primary NIC... Deriving dst_ip from NIC...' The agent didn't ask the operator for the destination VM's IP — it resolved it from the NIC itself. Then it calls the dual-gate evaluation for this exact flow."
+- **`final_verdict: DENY` — `decisive_rule` at gate1:** "`ghost-demo-block-pgsql`, priority 200, subnet NSG, gate1. Gate 2 (NIC NSG) was never evaluated. The AllowVnetInBound rule the on-call engineer saw in the portal is real — and completely irrelevant. The deny fired one gate earlier."
+- **Money moment:** "The engineer checked the NIC NSG. That is the right place to look. But for inbound traffic, Azure evaluates the subnet NSG first. The portal gives you each NSG in isolation — it never shows you the combined gate evaluation order. This does."
+- **Key fields to watch:** `decisive_rule.gate`, `decisive_rule.nsg_name`, `gate2` (absent — not evaluated)
+
+### After the demo
+```bash
+./demo/use_case_u/teardown.sh
+```
+
+---
+
+## Use Case V — "The Open Doorway"
+**Full NSG audit surfaces a forgotten allow-all rule — 18 months of accumulated drift | ~8 minutes**
+
+### What this shows
+- `inspect_nsg` in audit mode: no specific flow, full effective rule inventory across both gates
+- Ghost Agent recognises the absence of src/dst/port/proto/direction as an audit request (not an error)
+- A "temporary" TCP 3389 allow rule from 0.0.0.0/0 — added during a troubleshooting session 18 months ago, never removed — is surfaced as an immediate compliance finding
+- Audit mode distinguishes between rules that were deliberately configured and rules that were forgotten
+
+### Before the session
+```bash
+chmod +x demo/use_case_v/setup.sh demo/use_case_v/teardown.sh
+./demo/use_case_v/setup.sh
+```
+
+### Run the demo
+```bash
+python ghost_agent.py --config demo/config.env
+```
+Paste the prompt from `demo/use_case_v/PROMPT.txt`.
+
+### What to narrate while it runs
+- **Mode selection:** "The question is about exposure, not a specific failure. There's no broken connection to diagnose — the engineer wants to know what this VM is open to. The agent doesn't ask 'what port?' because the question is about all of them."
+- **`inspect_nsg` fires (audit mode):** "Called with just the VM name and resource group. This returns the full effective rule inventory across both NSG gates — every rule, every priority, both gates — not a verdict on one flow."
+- **Findings section — three overly permissive rules:** "The tool flags every custom Allow rule with a wildcard source or destination. You'll see three: the SSH rule (port 22, source `*`), any stray rules from prior use cases, and `ghost-demo-temp-rdp-access` (port 3389, source `*`)."
+- **On the SSH rule:** "SSH from `*` is a genuine finding. In a compliance audit you'd scope that to a bastion or jump box CIDR. The tool is correct to flag it — it's not noise."
+- **On stray rules from other use cases:** "If `AllowPipeMeter5001` appears, that's a leftover from another demo scenario that wasn't torn down. In a real environment it would be a legitimate finding — a port opened for a test, never cleaned up. Here it demonstrates exactly the class of drift the audit is designed to catch."
+- **`ghost-demo-temp-rdp-access`:** "Priority 500, Allow, Tcp:3389, source `*`. Linux VM. No RDP service listening. This rule was never going to trip a connectivity test because nothing's there to connect to — it only surfaces in a full rule inventory."
+- **Money moment:** "No monitoring alert fires for an open NSG rule on an idle port. Nobody checks port 3389 on a Linux VM. You only find it with a full effective rule audit — which before now meant reading NSG rule lists manually and hoping you didn't miss one."
+- **Key fields to watch:** `findings.permissive_rules[].rule.name`, `findings.permissive_rules[].wildcard_dimensions`
+
+### After the demo
+```bash
+./demo/use_case_v/teardown.sh
+```
+
+---
+
 ## Likely Questions and Answers
 
 **"What model is it using?"**

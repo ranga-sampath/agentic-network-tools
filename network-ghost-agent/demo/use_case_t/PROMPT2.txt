@@ -1,0 +1,1 @@
+I removed the route table from the subnet as you recommended. HTTPS API calls are working again but apt updates are still hanging — no error, just silence. Ran apt update on tf-source-vm and it never completes. Resource group: nw-forensics-rg.

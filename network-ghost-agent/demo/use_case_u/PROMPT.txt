@@ -1,0 +1,1 @@
+Database team just paged — tf-source-vm can't reach PostgreSQL on tf-dest-vm. Connections time out with no RST. Service team says the DB is up and accepting connections locally. Platform team did work on the default subnet about two hours ago. Source VM IP is 10.0.1.4, both VMs in nw-forensics-rg. Find out what's blocking this connection.

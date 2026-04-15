@@ -27,7 +27,10 @@ agentic-network-tools/
 ├── agentic-pcap-forensic-engine/    ← required: PCAP forensic analysis
 ├── agentic-cloud-orchestrator/      ← required: Azure packet capture orchestration
 ├── agentic-pipe-meter/              ← required: VM-to-VM performance measurement (use cases G–L)
-├── netfilter-inspector/             ← required: OS-layer firewall inspection (use cases J–K, M–O)
+├── netfilter-inspector/             ← required: OS-layer firewall inspection (use cases J–K, M–O, T)
+├── effective-network-inspector/     ← required: Azure control-plane drift detection (use cases P–R)
+├── effective-route-inspector/       ← required: Azure route selection / LPM verdict (use cases S–T)
+├── security-rule-inspector/         ← required: Azure NSG effective rule evaluation (use cases U–V)
 └── network-ghost-agent/             ← you are here
 ```
 
@@ -81,7 +84,7 @@ uv run --python 3.12 python ghost_agent.py \
   --storage-container <container-name>
 ```
 
-> **Note:** `run_pipe_meter` (use cases G–L) and `detect_config_drift` (use cases J–K, M–O) require a `--config` file. Individual flags are sufficient for use cases A–F only.
+> **Note:** `run_pipe_meter` (use cases G–L), `detect_config_drift` (use cases J–K, M–O, T), `detect_effective_network_drift` (use cases P–R), `effective_route_inspector` (use cases S–T), and `inspect_nsg` (use cases U–V) all require a `--config` file. Individual flags are sufficient for use cases A–F only.
 
 ### OS firewall inspection (`detect_config_drift`)
 
@@ -112,7 +115,7 @@ uv run --python 3.12 python ghost_agent.py --resume <session-id>
 
 ## Demo Scripts
 
-Fifteen end-to-end demo scenarios with full presenter guides are in `demo/`. Use cases A–F cover NSG, routing, and packet capture investigations. Use cases G–L add VM-to-VM performance measurement via Pipe Meter and require `agentic-pipe-meter/` to be present. Use cases M–O cover OS-layer firewall faults (fail2ban, CIS hardening, Docker daemon) invisible to the Azure control plane and require `netfilter-inspector/` to be present.
+Twenty-two end-to-end demo scenarios with full presenter guides are in `demo/`. Use cases A–F cover NSG, routing, and packet capture investigations. Use cases G–L add VM-to-VM performance measurement via Pipe Meter and require `agentic-pipe-meter/` to be present. Use cases M–O cover OS-layer firewall faults (fail2ban, CIS hardening, Docker daemon) invisible to the Azure control plane and require `netfilter-inspector/` to be present. Use cases P–R cover Azure control-plane drift detection — ENI baseline diffs, change-window verification, and the `drift_detected: false` certificate — and require `effective-network-inspector/` to be present. Use cases S–T cover routing layer fault diagnosis via the effective route inspector — LPM-based verdict, blackhole detection, and multi-fault iterative investigation. Use cases U–V cover Azure NSG effective rule evaluation — dual-gate verdict for a specific flow and full compliance audit — and require `security-rule-inspector/` to be present.
 
 | Use Case | Scenario | Duration |
 |---|---|---|
@@ -122,8 +125,8 @@ Fifteen end-to-end demo scenarios with full presenter guides are in `demo/`. Use
 | D — "The Two-Headed Hydra" | Two independent NSG misconfigurations | ~10 min |
 | E — "The Phantom Route" | UDR black hole — NSG clean, traffic vanishes | ~15 min |
 | F — "The Silent Gatekeeper" | Service endpoint removed — storage silently fails | ~12 min |
-| G — "Bandwidth Heist" | 20% packet loss via tc netem → HIGH_VARIANCE throughput | ~12 min |
-| H — "Latency Landmine" | tc netem 100ms delay + 10% loss → HIGH_VARIANCE latency | ~12 min |
+| G — "Bandwidth Heist" | tc tbf throttle on dest VM — throughput drops 90% | ~12 min |
+| H — "Latency Landmine" | tc netem 50ms delay + jitter — latency spikes with HIGH_VARIANCE | ~12 min |
 | I — "Packet Grinder" | Combined loss + delay + corruption → both metrics degraded | ~15 min |
 | J — "The Shadow Firewall" | iptables DROP port 5001 invisible to NSG audit; PCAP proves OS-level block | ~20 min |
 | K — "The Bandwidth Thief" | tc tbf rate throttle + iptables ICMP drop — two independent OS-level faults | ~20 min |
@@ -131,6 +134,13 @@ Fifteen end-to-end demo scenarios with full presenter guides are in `demo/`. Use
 | M — "The Banned Guest" | fail2ban ban blocks partner IP — NSG says port 22 open | ~8 min |
 | N — "The Hardening Surprise" | CIS hardening flips INPUT policy to DROP — NSG clean, all traffic dropped | ~10 min |
 | O — "The Docker Coup" | Docker daemon restart silently rewrites OS firewall — NSG unchanged | ~10 min |
+| P — "The Rollback That Wasn't" | ENI baseline diff proves incomplete rollback — NSG DENY + OS DROP left behind | ~12 min |
+| Q — "The Rule Nobody Checked" | Subnet NSG priority-100 deny overrides NIC NSG allow; customer claims nothing changed | ~12 min |
+| R — "The 60-Second Sign-Off" | `drift_detected: false` as a machine-readable change-management certificate | ~10 min |
+| S — "The Accidental Blackhole" | User /32 UDR → None wins by LPM; NSG clean, VM-to-VM traffic silently dropped | ~8 min |
+| T — "The Phantom Firewall" | Phantom NVA all-internet blackhole + iptables port 80 — two-phase iterative investigation | ~15 min |
+| U — "The Hidden Gate" | Subnet NSG denies at Gate 1 — portal NIC NSG shows all ALLOW | ~10 min |
+| V — "The Open Doorway" | NSG audit surfaces forgotten allow-all rule after 18 months of drift | ~8 min |
 
 ```bash
 # One-time setup

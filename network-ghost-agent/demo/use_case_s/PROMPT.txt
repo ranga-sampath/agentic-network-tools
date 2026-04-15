@@ -1,0 +1,1 @@
+tf-source-vm cannot reach tf-dest-vm. Connections just hang — no error, no RST, just silence. Checked the NSGs on both VMs and nothing looks wrong. The networking team did some route table work on the subnet this morning as part of a hardening exercise. Timing lines up but I'm not sure if that's the cause. Resource group: nw-forensics-rg.
