@@ -1,0 +1,127 @@
+{
+  "_comment": "Service tag rules test. Rules use AzureCloud, Storage, and Internet service tags as source/destination. Preprocessor must normalize these and pass them through. Skill must flag service tags that cannot be fully resolved without Azure's IP range data. Expected: AzureCloud and Storage are flagged as unresolvable service tags in audit output; Internet and VirtualNetwork are recognized built-ins.",
+  "value": [
+    {
+      "networkSecurityGroup": {
+        "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/networkSecurityGroups/infra-subnet-nsg"
+      },
+      "association": {
+        "subnet": {
+          "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/virtualNetworks/vnet-demo/subnets/infra-subnet"
+        }
+      },
+      "effectiveSecurityRules": [
+        {
+          "name": "allow-azure-monitor",
+          "priority": 100,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "AzureMonitor",
+          "destinationPortRange": "443"
+        },
+        {
+          "name": "allow-storage-outbound",
+          "priority": 110,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "Storage",
+          "destinationPortRange": "443"
+        },
+        {
+          "name": "deny-internet-outbound",
+          "priority": 200,
+          "direction": "Outbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "Internet",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "allow-azurecloud-inbound",
+          "priority": 150,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "AzureCloud",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "443"
+        },
+        {
+          "name": "AllowVnetInBound",
+          "priority": 65000,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowAzureLoadBalancerInBound",
+          "priority": 65001,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "AzureLoadBalancer",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllInBound",
+          "priority": 65500,
+          "direction": "Inbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowVnetOutBound",
+          "priority": 65000,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowInternetOutBound",
+          "priority": 65001,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "Internet",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllOutBound",
+          "priority": 65500,
+          "direction": "Outbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        }
+      ]
+    }
+  ]
+}

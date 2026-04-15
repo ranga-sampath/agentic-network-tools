@@ -1,0 +1,182 @@
+{
+  "value": [
+    {
+      "networkSecurityGroup": {
+        "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/networkSecurityGroups/app-subnet-nsg"
+      },
+      "association": {
+        "subnet": {
+          "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/virtualNetworks/vnet-demo/subnets/app-subnet"
+        }
+      },
+      "effectiveSecurityRules": [
+        {
+          "name": "allow-https-inbound",
+          "priority": 200,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "443"
+        },
+        {
+          "name": "AllowVnetInBound",
+          "priority": 65000,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowAzureLoadBalancerInBound",
+          "priority": 65001,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "AzureLoadBalancer",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllInBound",
+          "priority": 65500,
+          "direction": "Inbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowVnetOutBound",
+          "priority": 65000,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowInternetOutBound",
+          "priority": 65001,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "Internet",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllOutBound",
+          "priority": 65500,
+          "direction": "Outbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        }
+      ]
+    },
+    {
+      "networkSecurityGroup": {
+        "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/networkSecurityGroups/app-vm-nic-nsg"
+      },
+      "association": {
+        "networkInterface": {
+          "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/networkInterfaces/app-vm-nic"
+        }
+      },
+      "effectiveSecurityRules": [
+        {
+          "name": "allow-https-nic",
+          "priority": 300,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "10.0.0.0/16",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "443"
+        },
+        {
+          "name": "AllowVnetInBound",
+          "priority": 65000,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowAzureLoadBalancerInBound",
+          "priority": 65001,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "AzureLoadBalancer",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllInBound",
+          "priority": 65500,
+          "direction": "Inbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowVnetOutBound",
+          "priority": 65000,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowInternetOutBound",
+          "priority": 65001,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "Internet",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllOutBound",
+          "priority": 65500,
+          "direction": "Outbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        }
+      ]
+    }
+  ]
+}

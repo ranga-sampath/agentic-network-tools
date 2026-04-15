@@ -1,0 +1,183 @@
+{
+  "_comment": "NIC NSG denies traffic that subnet NSG allows. For inbound: subnet NSG allows port 8080, NIC NSG denies port 8080. Both gates evaluated — subnet passes, NIC denies. Expected verdict for TCP * -> 10.0.1.20:8080: DENIED at NIC gate.",
+  "value": [
+    {
+      "networkSecurityGroup": {
+        "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/networkSecurityGroups/web-subnet-nsg"
+      },
+      "association": {
+        "subnet": {
+          "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/virtualNetworks/vnet-demo/subnets/web-subnet"
+        }
+      },
+      "effectiveSecurityRules": [
+        {
+          "name": "allow-web-traffic",
+          "priority": 100,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "8080"
+        },
+        {
+          "name": "AllowVnetInBound",
+          "priority": 65000,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowAzureLoadBalancerInBound",
+          "priority": 65001,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "AzureLoadBalancer",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllInBound",
+          "priority": 65500,
+          "direction": "Inbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowVnetOutBound",
+          "priority": 65000,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowInternetOutBound",
+          "priority": 65001,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "Internet",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllOutBound",
+          "priority": 65500,
+          "direction": "Outbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        }
+      ]
+    },
+    {
+      "networkSecurityGroup": {
+        "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/networkSecurityGroups/web-vm-nic-nsg"
+      },
+      "association": {
+        "networkInterface": {
+          "id": "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-demo/providers/Microsoft.Network/networkInterfaces/web-vm-nic"
+        }
+      },
+      "effectiveSecurityRules": [
+        {
+          "name": "deny-port-8080-nic",
+          "priority": 200,
+          "direction": "Inbound",
+          "access": "Deny",
+          "protocol": "Tcp",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "8080"
+        },
+        {
+          "name": "AllowVnetInBound",
+          "priority": 65000,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowAzureLoadBalancerInBound",
+          "priority": 65001,
+          "direction": "Inbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "AzureLoadBalancer",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllInBound",
+          "priority": 65500,
+          "direction": "Inbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowVnetOutBound",
+          "priority": 65000,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "VirtualNetwork",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "VirtualNetwork",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "AllowInternetOutBound",
+          "priority": 65001,
+          "direction": "Outbound",
+          "access": "Allow",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "Internet",
+          "destinationPortRange": "0-65535"
+        },
+        {
+          "name": "DenyAllOutBound",
+          "priority": 65500,
+          "direction": "Outbound",
+          "access": "Deny",
+          "protocol": "All",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "0-65535",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "0-65535"
+        }
+      ]
+    }
+  ]
+}
