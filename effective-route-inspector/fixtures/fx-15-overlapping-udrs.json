@@ -1,0 +1,49 @@
+{
+  "value": [
+    {
+      "addressPrefix": ["10.0.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": "route-broad-via-nva-a",
+      "nextHopIpAddress": ["10.100.0.4"],
+      "nextHopType": "VirtualAppliance",
+      "source": "User",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["10.0.1.0/24"],
+      "disableBgpRoutePropagation": false,
+      "name": "route-subnet-via-nva-b",
+      "nextHopIpAddress": ["10.100.0.5"],
+      "nextHopType": "VirtualAppliance",
+      "source": "User",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["10.0.1.128/28"],
+      "disableBgpRoutePropagation": false,
+      "name": "route-sensitive-hosts-local",
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "User",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["10.0.0.0/8"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["0.0.0.0/0"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "Internet",
+      "source": "Default",
+      "state": "Active"
+    }
+  ]
+}

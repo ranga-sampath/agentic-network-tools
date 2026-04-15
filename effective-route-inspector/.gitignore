@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Test cache
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Audit artifacts (written at runtime — not source)
+audit/
+/tmp/
+
+# Editor
+.vscode/
+.idea/

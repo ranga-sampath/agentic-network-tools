@@ -1,0 +1,41 @@
+{
+  "_comment": "Production hub-spoke with NVA. The az CLI (or ARM API response deserialized through certain SDK wrappers) returns nextHopIpAddress as a bare string instead of a one-element array. This is a known serialization variation: ARM returns the field as an array in the API spec, but some CLI versions or custom tooling that serializes the API response differently may emit a string. The UDR pointing to the NVA firewall (10.4.0.1) is the only route out for 172.16.0.0/12 traffic.",
+  "value": [
+    {
+      "addressPrefix": ["10.0.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["172.16.10.0/24"],
+      "disableBgpRoutePropagation": false,
+      "name": "udr-to-nva",
+      "nextHopIpAddress": "10.4.0.1",
+      "nextHopType": "VirtualAppliance",
+      "source": "User",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["172.16.0.0/12"],
+      "disableBgpRoutePropagation": false,
+      "name": "udr-to-nva-broad",
+      "nextHopIpAddress": "10.4.0.1",
+      "nextHopType": "VirtualAppliance",
+      "source": "User",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["0.0.0.0/0"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "Internet",
+      "source": "Default",
+      "state": "Active"
+    }
+  ]
+}

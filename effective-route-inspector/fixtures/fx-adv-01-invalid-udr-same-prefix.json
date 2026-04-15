@@ -1,0 +1,41 @@
+{
+  "_comment": "Production spoke VNet. A UDR was applied to force traffic for 172.16.10.0/24 through an NVA firewall. The NVA was subsequently deleted or its NIC deallocated, causing Azure to mark the UDR Invalid. Azure's system route for the same prefix (VnetLocal) becomes the Active winner. The tool should warn that an Invalid UDR for this exact prefix existed and would have taken source precedence (User tier 1 < Default tier 3) if it were Active — this means the NVA was the intended path and is now bypassed. The current INVALID_SHADOW check only fires for routes with a LONGER prefix than the winner (prefix_length > winner prefix_length). Same-prefix Invalid routes that would have won by source precedence are silently missed.",
+  "value": [
+    {
+      "addressPrefix": ["10.0.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["172.16.10.0/24"],
+      "disableBgpRoutePropagation": false,
+      "name": "udr-to-nva",
+      "nextHopIpAddress": ["10.0.0.4"],
+      "nextHopType": "VirtualAppliance",
+      "source": "User",
+      "state": "Invalid"
+    },
+    {
+      "addressPrefix": ["172.16.10.0/24"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["0.0.0.0/0"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "Internet",
+      "source": "Default",
+      "state": "Active"
+    }
+  ]
+}

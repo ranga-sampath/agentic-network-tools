@@ -1,0 +1,22 @@
+{
+  "value": [
+    {
+      "addressPrefix": ["10.0.1.0/24"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["0.0.0.0/0"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "Internet",
+      "source": "Default",
+      "state": "Active"
+    }
+  ]
+}

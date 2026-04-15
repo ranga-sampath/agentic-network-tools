@@ -1,0 +1,40 @@
+{
+  "value": [
+    {
+      "addressPrefix": ["10.0.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["172.20.0.0/16", "172.20.5.0/24"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetPeering",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["10.1.0.0/16", "10.2.0.0/16", "10.3.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetPeering",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["0.0.0.0/0"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "Internet",
+      "source": "Default",
+      "state": "Active"
+    }
+  ]
+}

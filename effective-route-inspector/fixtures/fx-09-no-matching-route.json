@@ -1,0 +1,31 @@
+{
+  "value": [
+    {
+      "addressPrefix": ["10.0.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["10.1.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetPeering",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["192.168.0.0/24"],
+      "disableBgpRoutePropagation": false,
+      "name": "route-onprem-hq",
+      "nextHopIpAddress": ["10.0.255.4"],
+      "nextHopType": "VirtualNetworkGateway",
+      "source": "User",
+      "state": "Active"
+    }
+  ]
+}

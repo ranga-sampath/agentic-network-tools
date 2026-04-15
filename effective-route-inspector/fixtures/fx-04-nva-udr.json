@@ -1,0 +1,40 @@
+{
+  "value": [
+    {
+      "addressPrefix": ["10.0.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "VnetLocal",
+      "source": "Default",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["192.168.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": "route-onprem-via-nva",
+      "nextHopIpAddress": ["10.0.0.4"],
+      "nextHopType": "VirtualAppliance",
+      "source": "User",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["10.10.0.0/16"],
+      "disableBgpRoutePropagation": false,
+      "name": "route-dmz-via-nva",
+      "nextHopIpAddress": ["10.0.0.4"],
+      "nextHopType": "VirtualAppliance",
+      "source": "User",
+      "state": "Active"
+    },
+    {
+      "addressPrefix": ["0.0.0.0/0"],
+      "disableBgpRoutePropagation": false,
+      "name": null,
+      "nextHopIpAddress": [],
+      "nextHopType": "Internet",
+      "source": "Default",
+      "state": "Active"
+    }
+  ]
+}
