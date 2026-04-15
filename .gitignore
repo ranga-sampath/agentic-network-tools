@@ -62,5 +62,17 @@ netfilter-inspector/test-audit/
 network-ghost-agent/test-audit/
 network-ghost-agent/audit-layer4/
 
+# Security Rule Inspector — runtime artifacts
+security-rule-inspector/audit/
+
+# Effective Route Inspector — runtime artifacts (also in module's own .gitignore)
+effective-route-inspector/audit/
+
+# pytest cache (global)
+.pytest_cache/
+
+# Concept documents (local ideation, not source)
+concept.md
+
 # uv scaffold placeholder
 main.py
