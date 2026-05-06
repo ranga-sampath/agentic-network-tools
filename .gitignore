@@ -30,6 +30,9 @@ CLAUDE.md
 # Application Output (Generated data)
 agentic-pcap-forensic-engine/tests/sample_pcaps/
 
+# Ghost Agent — eval artifacts and infrastructure (local only)
+network-ghost-agent/eval/
+
 # Ghost Agent — runtime output and secrets
 ghost_session.json
 audit/
@@ -57,6 +60,7 @@ netfilter-inspector/firewall-inspector/nftables-config.env
 netfilter-inspector/firewall-inspector/plans/
 netfilter-inspector/firewall-inspector/audit-nft/
 netfilter-inspector/test-audit/
+netfilter-inspector/iptables-parser/explain-feature-design.md
 
 # Ghost Agent — additional runtime artifact directories
 network-ghost-agent/test-audit/

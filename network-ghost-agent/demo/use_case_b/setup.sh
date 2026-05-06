@@ -9,7 +9,7 @@
 #   - Some deliberately broken connections (connection resets, timeouts)
 #     to give the PCAP engine anomalies to report on
 #
-# The traffic generator runs in the background for 10 minutes, which is
+# The traffic generator runs in the background for 30 minutes, which is
 # longer than the capture window, ensuring there is always live traffic
 # when the capture starts.
 # =============================================================================
@@ -44,10 +44,10 @@ az vm run-command invoke \
     cat > /tmp/demo-site/index.html <<'HTML'
 <html><body><h1>Ghost Agent Demo Target</h1><p>VM: ${DEST_VM_NAME}</p></body></html>
 HTML
-    # Start server (auto-kills after 600 seconds = 10 minutes)
+    # Start server (auto-kills after 1800 seconds = 30 minutes)
     nohup bash -c '
       cd /tmp/demo-site
-      timeout 600 python3 -m http.server ${HTTP_PORT} --bind 0.0.0.0 \
+      timeout 1800 python3 -m http.server ${HTTP_PORT} --bind 0.0.0.0 \
         > /tmp/demo_http.log 2>&1
     ' &
     disown
@@ -69,11 +69,11 @@ az vm run-command invoke \
   --scripts "
     cat > /tmp/demo_traffic_gen.sh <<'TRAFFIC'
 #!/usr/bin/env bash
-# Traffic generator for Ghost Agent demo — runs for 10 minutes
+# Traffic generator for Ghost Agent demo — runs for 30 minutes
 DEST_IP=\"${DEST_VM_PRIVATE_IP}\"
 HTTP_PORT=${HTTP_PORT}
 RST_PORT=${RST_PORT}
-END_TIME=\$(( \$(date +%s) + 600 ))
+END_TIME=\$(( \$(date +%s) + 1800 ))
 
 echo 'Traffic generator started. PID: \$\$' > /tmp/demo_traffic.log
 
@@ -125,7 +125,7 @@ echo "     Traffic log tail: $VERIFY"
 echo ""
 echo "  [OK] Traffic is flowing between VMs."
 echo "       HTTP server: dest-vm:${HTTP_PORT}"
-echo "       Generator runs for ~10 minutes"
+echo "       Generator runs for ~30 minutes"
 echo ""
 echo "  Wait 30-60 seconds after capture starts to ensure enough packets."
 echo ""
