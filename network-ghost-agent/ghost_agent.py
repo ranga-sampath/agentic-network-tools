@@ -34,6 +34,7 @@ sys.path.insert(0, str(_ROOT / "netfilter-inspector" / "nftables-parser"))
 
 from safe_exec_shell import SafeExecShell, HitlDecision   # noqa: E402
 from cloud_orchestrator import CloudOrchestrator           # noqa: E402
+from llm_adapter import create_adapter, LLMRateLimitError  # noqa: E402
 
 load_dotenv()
 
@@ -84,12 +85,13 @@ def save_session(state: dict, path: str = SESSION_FILE):
         json.dump(base, f, indent=2, default=str)
 
 
-def _new_session(model: str, audit_dir: str) -> dict:
+def _new_session(model: str, audit_dir: str, llm_provider: str = "gemini") -> dict:
     sid = f"ghost_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     return {
         "session_id": sid,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "resumed_from": None,
+        "llm_provider": llm_provider,
         "model": model,
         "audit_dir": audit_dir,
         "turn_count": 0,
@@ -105,6 +107,7 @@ def _new_session(model: str, audit_dir: str) -> dict:
         "manual_cleanup_pending": [],
         "denial_reasons": {},
         "investigation_audit_start_line": 0,
+        "abort_reason": None,
     }
 
 
@@ -188,6 +191,20 @@ def terminal_hitl_callback(command: str, reasoning: str, risk_explanation: str, 
         print("  Invalid choice — please enter A, D, or M.")
 
 terminal_hitl_callback.captured_reason = ""
+
+
+def _auto_approve_hitl_callback(
+    command: str, reasoning: str, risk_explanation: str, tier: int
+) -> HitlDecision:
+    """HITL callback for --auto-approve evaluation mode.
+
+    Auto-approves RISKY commands without blocking on input(). Every approval
+    is printed to the console. FORBIDDEN commands are still blocked by the
+    Shell's classification pipeline before this callback is ever reached.
+    """
+    print(f"[AUTO-APPROVE][eval-mode] RISKY approved: {command[:70]}")
+    return HitlDecision(action="approve")
+
 
 # ---------------------------------------------------------------------------
 # Tool declarations
@@ -2707,18 +2724,18 @@ def _offer_cleanup_before_rca(state: dict, orchestrator, session_file: str):
 # Tool-use loop
 # ---------------------------------------------------------------------------
 
-def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, client, session_file: str,
-              effective_system_prompt: str = SYSTEM_PROMPT, ghost_cfg: dict | None = None):
+def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adapter, session_file: str,
+              effective_system_prompt: str = SYSTEM_PROMPT, ghost_cfg: dict | None = None,
+              auto_approve: bool = False):
     """Main reasoning loop. Exits via complete_investigation or MAX_LOOP_TURNS."""
-    model     = state["model"]
     max_turns = MAX_LOOP_TURNS
-    consecutive_empty = 0   # tracks consecutive empty/blocked Gemini responses
+    consecutive_empty = 0   # tracks consecutive empty/blocked LLM responses
 
     while True:
         # Turn limit check — offer extension before incrementing
         if state["turn_count"] >= max_turns:
             print(f"\n[Ghost Agent] Maximum investigation turns ({max_turns}) reached.")
-            choice = input("[E]xtend 10 more turns / [G]enerate RCA now > ").strip().lower()
+            choice = "g" if auto_approve else input("[E]xtend 10 more turns / [G]enerate RCA now > ").strip().lower()
             if choice == "e":
                 max_turns += 10
                 continue
@@ -2732,34 +2749,36 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
 
         state["turn_count"] += 1
 
-        # Call Gemini — retry up to 3 times on 429 rate-limit before giving up
+        # Call LLM via adapter — retry up to 3 times on rate-limit before giving up.
+        # LLMRateLimitError is raised by the adapter for any provider's rate-limit
+        # response, keeping provider-specific detection inside llm_adapter.py.
         response = None
         for _api_attempt in range(3):
             try:
-                response = client.models.generate_content(
-                    model    = model,
-                    contents = history,
-                    config   = types.GenerateContentConfig(
-                        tools              = [ghost_tools],
-                        system_instruction = effective_system_prompt,
-                    ),
-                )
+                response = adapter.generate(history, ghost_tools, effective_system_prompt)
                 break  # success — exit retry loop
-            except Exception as e:
-                err_str = str(e)
-                is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
-                if is_rate_limit and _api_attempt < 2:
+            except LLMRateLimitError as e:
+                if _api_attempt < 2:
                     wait_sec = 30 * (2 ** _api_attempt)   # 30s, then 60s
-                    print(f"\n[Ghost Agent] Rate limited (429). Waiting {wait_sec}s, "
+                    print(f"\n[Ghost Agent] Rate limited. Waiting {wait_sec}s, "
                           f"then retrying ({_api_attempt + 2}/3)...")
                     time.sleep(wait_sec)
                 else:
-                    print(f"[ERROR] Gemini API error: {e}")
+                    print(f"[ERROR] LLM API error: {e}")
+                    state["abort_reason"] = "rate_limit"
                     save_session(state, session_file)
                     print(f"Session saved. Resume with: "
                           f"python ghost_agent.py --resume {state['session_id']}")
                     sys.exit(1)
+            except Exception as e:
+                print(f"[ERROR] LLM API error: {e}")
+                state["abort_reason"] = "malformed_function_call" if "MALFORMED_FUNCTION_CALL" in str(e) else "unknown"
+                save_session(state, session_file)
+                print(f"Session saved. Resume with: "
+                      f"python ghost_agent.py --resume {state['session_id']}")
+                sys.exit(1)
         if response is None:
+            state["abort_reason"] = "empty_response"
             save_session(state, session_file)
             print(f"Session saved. Resume with: python ghost_agent.py --resume {state['session_id']}")
             sys.exit(1)
@@ -2769,12 +2788,14 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
             # Log the block reason if the SDK exposes it
             feedback    = getattr(response, "prompt_feedback", None)
             block_reason = getattr(feedback, "block_reason", None) if feedback else None
-            print(f"[WARN] Gemini empty response {consecutive_empty}/3"
+            print(f"[WARN] LLM empty response {consecutive_empty}/3"
                   f" — {block_reason or 'safety/quota'}. Saving session.")
             save_session(state, session_file)
 
             if consecutive_empty >= 3:
                 print("[ERROR] Persistent empty responses after 3 attempts. Halting.")
+                state["abort_reason"] = "empty_response"
+                save_session(state, session_file)
                 print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
                 sys.exit(1)
 
@@ -2805,6 +2826,42 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
 
         consecutive_empty = 0  # successful response — reset counter
         candidate = response.candidates[0]
+
+        # Gemini 2.5+ returns candidate.content=None when finish_reason is
+        # SAFETY, RECITATION, or other non-STOP values. Treat like empty response.
+        if candidate.content is None:
+            finish_reason = getattr(candidate, "finish_reason", None)
+            consecutive_empty += 1
+            print(f"[WARN] LLM candidate content is None {consecutive_empty}/3"
+                  f" — finish_reason={finish_reason or 'unknown'}. Saving session.")
+            save_session(state, session_file)
+            if consecutive_empty >= 3:
+                print("[ERROR] Persistent None candidate content after 3 attempts. Halting.")
+                state["abort_reason"] = "empty_response"
+                save_session(state, session_file)
+                print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
+                sys.exit(1)
+            history.append(types.Content(role="model", parts=[types.Part(text="[recovering]")]))
+            pending_tasks = state.get("active_task_ids", [])
+            if pending_tasks:
+                nudge = (
+                    f"The capture task {pending_tasks[-1]} is in progress. "
+                    f"Call check_task(task_id=\"{pending_tasks[-1]}\") now. "
+                    f"Respond with only the function call — no text."
+                )
+            elif state.get("active_hypothesis_ids"):
+                nudge = (
+                    "Continue the investigation. Issue the next diagnostic tool call "
+                    "with no accompanying text."
+                )
+            else:
+                nudge = (
+                    "Call complete_investigation(confidence=\"low\", "
+                    "root_cause_summary=\"Investigation halted.\") now."
+                )
+            history.append(types.Content(role="user", parts=[types.Part(text=nudge)]))
+            continue
+
         fc_parts  = [p for p in candidate.content.parts if p.function_call]
         txt_parts = [p for p in candidate.content.parts if hasattr(p, "text") and p.text]
 
@@ -2840,7 +2897,7 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
                 continue
 
             # Meaningful reasoning text — ask user to continue or wrap up
-            choice = input("\nContinue investigation? [C]ontinue / [D]one > ").strip().lower()
+            choice = "c" if auto_approve else input("\nContinue investigation? [C]ontinue / [D]one > ").strip().lower()
             if choice == "d":
                 text_summary = total_text
                 _generate_rca(
@@ -2951,7 +3008,12 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, clie
 def main():
     parser = argparse.ArgumentParser(description="Unified Ghost Agent CLI — AI network forensics investigator")
     parser.add_argument("--resume",             metavar="SESSION_ID", help="Resume a previous session by session_id")
-    parser.add_argument("--model",              default=DEFAULT_MODEL,  help=f"Gemini model (default: {DEFAULT_MODEL})")
+    parser.add_argument("--llm-provider",       default="gemini", choices=["gemini", "anthropic"],
+                        help="LLM provider for the AI brain (default: gemini)")
+    parser.add_argument("--auto-approve",       action="store_true",
+                        help="Auto-approve RISKY commands without HITL prompts (evaluation mode only)")
+    parser.add_argument("--model",              default=DEFAULT_MODEL,
+                        help=f"Model name for the selected provider (default: {DEFAULT_MODEL})")
     parser.add_argument("--audit-dir",          default=DEFAULT_AUDIT_DIR, help=f"Shared audit directory (default: {DEFAULT_AUDIT_DIR})")
     parser.add_argument("--storage-auth-mode",  choices=["login", "key"], default="login",
                         help="Azure storage authentication mode (default: login)")
@@ -2966,6 +3028,9 @@ def main():
     parser.add_argument("--config",             default=None, metavar="FILE",
                         help="Path to a config.env file (e.g. demo/config.env). Values are used as "
                              "defaults and can be overridden by explicit flags above.")
+    parser.add_argument("--prompt-addon",       default=None, metavar="FILE",
+                        help="Path to a plain-text file whose contents are appended to the system "
+                             "prompt. Used for variant testing — do not use in production.")
     args = parser.parse_args()
 
     # Load config.env if provided; populate missing CLI args from it
@@ -2987,24 +3052,44 @@ def main():
             args.storage_container = ghost_cfg.get("STORAGE_CONTAINER_NAME", "")
         if not args.audit_dir or args.audit_dir == DEFAULT_AUDIT_DIR:
             args.audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
-        # Also load GEMINI_API_KEY from config if not in environment
+        # Load provider API keys from config if not already in environment
         if not os.environ.get("GEMINI_API_KEY") and ghost_cfg.get("GEMINI_API_KEY"):
             os.environ["GEMINI_API_KEY"] = ghost_cfg["GEMINI_API_KEY"]
+        if not os.environ.get("ANTHROPIC_API_KEY") and ghost_cfg.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = ghost_cfg["ANTHROPIC_API_KEY"]
 
-    # Guard: GEMINI_API_KEY must be present before any sub-module is instantiated
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("[ERROR] GEMINI_API_KEY is not set.")
-        print("        Set it in your environment or add GEMINI_API_KEY=... to a .env file.")
+    # Resolve API key for the selected provider before any sub-module is instantiated
+    if args.llm_provider == "gemini":
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            print("[ERROR] GEMINI_API_KEY is not set.")
+            print("        Set it in your environment or add GEMINI_API_KEY=... to a config.env file.")
+            sys.exit(1)
+    elif args.llm_provider == "anthropic":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("[ERROR] ANTHROPIC_API_KEY is not set.")
+            print("        Set it in your environment or add ANTHROPIC_API_KEY=... to a config.env file.")
+            sys.exit(1)
+    else:
+        print(f"[ERROR] Unknown --llm-provider: {args.llm_provider!r}. Must be 'gemini' or 'anthropic'.")
+        sys.exit(1)
+
+    # Guard against using a Gemini model name with a non-Gemini provider — the API
+    # will reject it at investigation start with a confusing "model not found" error.
+    if args.llm_provider != "gemini" and args.model.startswith("gemini-"):
+        print(f"[ERROR] Model {args.model!r} looks like a Gemini model name "
+              f"but --llm-provider is {args.llm_provider!r}.")
+        print(f"        Specify an appropriate model, e.g. --model claude-3-5-haiku-20251001")
         sys.exit(1)
 
     # Step 1-2: Load or create session
     if args.resume:
         state = _load_session(SESSION_FILE, args.resume)
         if state is None:          # User chose [F]resh after checksum/parse failure
-            state = _new_session(args.model, args.audit_dir)
+            state = _new_session(args.model, args.audit_dir, args.llm_provider)
     else:
-        state = _new_session(args.model, args.audit_dir)
+        state = _new_session(args.model, args.audit_dir, args.llm_provider)
 
     audit_dir = state["audit_dir"]
     sid       = state["session_id"]
@@ -3017,10 +3102,13 @@ def main():
     # Step 3: Instantiate SafeExecShell.
     # On resume, count the max sequence already written so new audit_ids don't collide.
     starting_seq = _count_shell_sequences(audit_dir, sid) if state.get("is_resume") else 0
+    hitl_cb = _auto_approve_hitl_callback if args.auto_approve else terminal_hitl_callback
+    if args.auto_approve:
+        print("[WARN] --auto-approve active: RISKY commands will be approved without HITL prompts.")
     shell = SafeExecShell(
         session_id        = sid,
         audit_dir         = audit_dir,
-        hitl_callback     = terminal_hitl_callback,
+        hitl_callback     = hitl_cb,
         starting_sequence = starting_seq,
     )
 
@@ -3116,6 +3204,13 @@ def main():
     else:
         effective_prompt = SYSTEM_PROMPT
 
+    if args.prompt_addon:
+        addon_path = Path(args.prompt_addon)
+        if addon_path.exists():
+            effective_prompt = effective_prompt + "\n\n" + addon_path.read_text().strip()
+        else:
+            print(f"[WARN] --prompt-addon file not found: {args.prompt_addon} — running without addon")
+
     # Record investigation boundary — audit lines written before this point are startup
     # cleanup commands (orphan sentinel). Recorded here so _generate_rca can exclude them
     # from the Command Evidence table (which should show only investigation commands).
@@ -3123,14 +3218,16 @@ def main():
     save_session(state, SESSION_FILE)
 
     # Begin Tool-Use Loop
-    client      = genai.Client(api_key=api_key)
+    adapter     = create_adapter(args.llm_provider, api_key, args.model)
     ghost_tools = _build_ghost_tools()
 
     try:
-        _run_loop(state, history, shell, orchestrator, ghost_tools, client, SESSION_FILE,
-                  effective_system_prompt=effective_prompt, ghost_cfg=ghost_cfg)
+        _run_loop(state, history, shell, orchestrator, ghost_tools, adapter, SESSION_FILE,
+                  effective_system_prompt=effective_prompt, ghost_cfg=ghost_cfg,
+                  auto_approve=args.auto_approve)
     except KeyboardInterrupt:
         print(f"\n\n[Ghost Agent] Interrupted — saving session…")
+        state["abort_reason"] = "operator_interrupt"
         save_session(state, SESSION_FILE)
         print(f"Resume with: python ghost_agent.py --resume {sid}")
         sys.exit(0)
