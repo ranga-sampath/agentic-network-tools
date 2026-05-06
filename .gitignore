@@ -31,7 +31,12 @@ CLAUDE.md
 agentic-pcap-forensic-engine/tests/sample_pcaps/
 
 # Ghost Agent — eval artifacts and infrastructure (local only)
-network-ghost-agent/eval/
+network-ghost-agent/eval/artifact-store/
+network-ghost-agent/eval/runs/
+network-ghost-agent/eval/findings/
+network-ghost-agent/eval/run_phase1.sh
+network-ghost-agent/eval/eval-workflow-retrospective.md
+network-ghost-agent/eval/runs/variant-a/variant-a-decision.md
 
 # Ghost Agent — runtime output and secrets
 ghost_session.json
