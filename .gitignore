@@ -37,6 +37,7 @@ network-ghost-agent/eval/findings/
 network-ghost-agent/eval/run_phase1.sh
 network-ghost-agent/eval/eval-workflow-retrospective.md
 network-ghost-agent/eval/runs/variant-a/variant-a-decision.md
+network-ghost-agent/eval/variant-*.txt
 
 # Ghost Agent — runtime output and secrets
 ghost_session.json
