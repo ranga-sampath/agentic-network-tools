@@ -1,28 +1,40 @@
 # Design: Unified Ghost Agent CLI
 
-> **Status:** Design specification — no implementation code.
 > **Companion:** Read `architecture.md` first for system boundaries and safety layers.
-> **AI Brain:** Gemini via `google-genai` SDK — `genai.Client`, `genai.types.Tool`, `GenerateContentConfig`.
+> **AI Brain:** Pluggable via `llm_adapter.py`. Default: Gemini (`gemini-2.0-flash`). Anthropic Claude supported via `--llm-provider anthropic`. The core loop is provider-agnostic; all SDK-specific code lives in the adapter.
 
 ---
 
-## 1. Tool-Use Contract: Eight Gemini Function Declarations
+## 1. Tool-Use Contract: Eight Function Declarations
 
 The Brain interacts with the world exclusively through these eight declared tools. Every tool maps to either `shell.execute()`, `orchestrator.orchestrate()`, or a dedicated subprocess handler. No tool reaches below this boundary.
 
-The tool set is passed to `generate_content()` as:
+The tool set is defined in `ghost_agent.py` as a list of neutral Python dicts (`GHOST_TOOL_SPECS`) — plain JSON Schema-like data with no SDK dependency. At startup, `adapter.convert_tools(GHOST_TOOL_SPECS)` converts these to the provider-native schema. The Brain sees the same logical tools regardless of provider; only the wire format differs.
 
-```
-genai.types.Tool(function_declarations=[
-    run_shell_cmd_decl,
-    capture_traffic_decl,
-    check_task_decl,
-    cancel_task_decl,
-    cleanup_task_decl,
-    run_pipe_meter_decl,
-    detect_config_drift_decl,
-    complete_investigation_decl,
-])
+```python
+# ghost_agent.py — neutral tool spec (no LLM SDK import required)
+GHOST_TOOL_SPECS = [
+    {
+        "name": "run_shell_cmd",
+        "description": "Execute a single diagnostic or Azure read-only command ...",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command":   {"type": "string", "description": "..."},
+                "reasoning": {"type": "string", "description": "..."},
+            },
+            "required": ["command", "reasoning"],
+        },
+    },
+    # ... (capture_traffic, check_task, cancel_task, cleanup_task,
+    #      run_pipe_meter, detect_config_drift, complete_investigation)
+]
+
+# Built once at startup — adapter.convert_tools() converts neutral dicts to provider-native:
+#   GeminiAdapter   → genai.types.Tool with FunctionDeclarations (inside llm_adapter.py)
+#   AnthropicAdapter → list[dict] with input_schema (already close to neutral format)
+native_tools = adapter.convert_tools(GHOST_TOOL_SPECS)
+# native_tools passed unchanged to adapter.generate() on every turn
 ```
 
 ---
@@ -468,7 +480,7 @@ Response shape:
 
 ## 2. System Prompt Design
 
-The system prompt is a single string passed as `system_instruction` in `GenerateContentConfig`. It establishes three things: investigation framework, tool decision taxonomy, and denial recovery protocol.
+The system prompt is a single string passed as the `system_prompt` parameter to `adapter.generate()` on every call. Each adapter maps this to its provider-native mechanism (`system_instruction` in Gemini's `GenerateContentConfig`; `system` parameter in Anthropic's `messages.create`). The prompt content is identical across providers. It establishes three things: investigation framework, tool decision taxonomy, and denial recovery protocol.
 
 ### Investigation Framework (embedded in system prompt)
 
@@ -704,8 +716,10 @@ COMMON CONTRADICTION PATTERNS:
 ```
 STEP 1: Parse command-line arguments
   ghost_agent.py [--resume <session_id>]
-  Optional: --model <gemini-model> (default: gemini-2.0-flash)
-  Optional: --audit-dir <path>  (default: ./audit/)
+  Optional: --model <model-name>         (default: gemini-2.0-flash)
+  Optional: --llm-provider {gemini,anthropic}  (default: gemini)
+  Optional: --auto-approve               (skip HITL prompts; evaluation mode only; logged in audit trail)
+  Optional: --audit-dir <path>           (default: ./audit/)
 
 STEP 2: Load or create ghost_session.json
   IF --resume provided:
@@ -722,7 +736,7 @@ STEP 2: Load or create ghost_session.json
         // If continue: proceed with loaded data, noting the integrity warning
     Validate session_id matches
     Reconstruct conversation_history from shell_audit_{sid}.jsonl
-    (replay command+result pairs as function_call/function_response turns)
+    (replay command+result pairs as tool_call/tool_results turns in neutral dict format)
     Set is_resume = True in session state
   ELSE:
     session_id = "ghost_{YYYYMMDD}_{HHMMSS}"
@@ -787,14 +801,30 @@ STEP 8: Execute cleanup (if user chose to clean up)
     Each deletion is a RISKY command → HITL gate activates per deletion
     User may deny individual deletions — skip those and continue
 
-STEP 9: Accept natural-language user intent
+STEP 9: Instantiate LLM adapter and build native tool schema
+  // Load API key for selected provider
+  IF --llm-provider == "gemini":
+    api_key = os.environ.get("GEMINI_API_KEY") or ghost_cfg.get("GEMINI_API_KEY")
+    IF not api_key: print error, exit 1
+  ELIF --llm-provider == "anthropic":
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or ghost_cfg.get("ANTHROPIC_API_KEY")
+    IF not api_key: print error, exit 1
+
+  adapter     = create_adapter(provider=args.llm_provider, api_key=api_key, model=args.model)
+  native_tools = adapter.convert_tools(GHOST_TOOL_SPECS)
+  // GHOST_TOOL_SPECS: list of neutral JSON Schema dicts defined in ghost_agent.py
+
+  // If --auto-approve: replace terminal_hitl_callback with auto-approve callback
+  // (logs action="auto_approved_eval_mode" to audit trail — evaluation runs are labeled)
+
+STEP 10: Accept natural-language user intent
   Print: "=== Ghost Agent Ready ==="
   Print: "What network problem should I investigate?"
   user_intent = input("> ").strip()
-  Append user_intent to conversation_history as a "user" role turn.
+  Append {"role": "user", "text": user_intent} to conversation_history.
 
-STEP 10: Save session state and begin Tool-Use Loop
-  save_session()   — persists session_id, model, audit_dir, turn_count=0
+STEP 11: Save session state and begin Tool-Use Loop
+  save_session()   — persists session_id, llm_provider, model, audit_dir, turn_count=0
   BEGIN TOOL-USE LOOP (see Section 4)
 ```
 
@@ -812,44 +842,69 @@ WHILE turn_count < MAX_LOOP_TURNS:
 
     turn_count += 1
 
-    // ── CALL GEMINI API ──────────────────────────────────────────────
-    response = client.models.generate_content(
-        model       = GEMINI_MODEL,
-        config      = GenerateContentConfig(
-            tools              = [ghost_tools],
-            system_instruction = SYSTEM_PROMPT,
-        ),
-        contents    = conversation_history,
+    // ── CALL LLM (via adapter) ───────────────────────────────────────
+    // conversation_history is a list of neutral dicts (see §12).
+    // adapter.generate() converts to provider-native format, calls the API,
+    // and returns a normalized response object with .tool_calls and .text.
+    response = adapter.generate(
+        history       = conversation_history,
+        tools         = native_tools,         // output of adapter.convert_tools()
+        system_prompt = effective_system_prompt,
     )
 
-    // ── HANDLE NON-TOOL RESPONSE (STOP with text only) ───────────────
-    IF response.candidates[0].finish_reason == "STOP"
-       AND no function_call parts in response:
+    // ── HANDLE EMPTY/BLOCKED RESPONSE ───────────────────────────────
+    IF response.is_empty:
+        consecutive_empty += 1
+        IF consecutive_empty >= 3:
+            save_session()
+            print("[ERROR] Persistent empty responses. Halting.")
+            sys.exit(1)
+        // Inject recovery nudge — adapter surfaced an empty response, loop drives recovery
+        IF state.get("active_task_ids"):
+            nudge = "Pending capture task(s) in progress. Call check_task now."
+        ELIF state.get("active_hypothesis_ids"):
+            nudge = "Continue the investigation. Issue the next tool call now."
+        ELSE:
+            nudge = "Call complete_investigation(confidence='low', ...) now."
+        conversation_history.append({"role": "model", "text": "[recovering]"})
+        conversation_history.append({"role": "user",  "text": nudge})
+        save_session()
+        CONTINUE
 
-        brain_text = collect all text parts from response
+    consecutive_empty = 0
+
+    // ── HANDLE NON-TOOL RESPONSE (text only, no tool calls) ──────────
+    IF response.tool_calls is empty:
+
+        brain_text = response.text
         print("[Ghost Agent]", brain_text)
 
         choice = input("Continue investigation? [C]ontinue / [D]one > ")
         IF choice == "done":
             GOTO RCA_GENERATION
         ELSE:
-            user_msg = input("Your next instruction > ")
-            conversation_history.append({"role": "user", "parts": [user_msg]})
-            // Append model response to history first
-            conversation_history.append({"role": "model", "parts": response.parts})
+            // Append the model's text turn and a user continuation nudge
+            conversation_history.append({"role": "model", "text": response.text})
+            conversation_history.append({"role": "user", "text": "Continue the investigation."})
             save_session()
             CONTINUE
 
     // ── APPEND MODEL TURN TO HISTORY ─────────────────────────────────
-    conversation_history.append({"role": "model", "parts": response.parts})
+    // Neutral dict: role="model", text (optional), tool_calls (list of {id, name, args})
+    conversation_history.append({
+        "role": "model",
+        "text": response.text,
+        "tool_calls": response.tool_calls,   // [{id, name, args}, ...]
+    })
 
     // ── DISPATCH ALL FUNCTION CALLS ───────────────────────────────────
-    function_response_parts = []
+    tool_results = []
 
-    FOR each function_call in response.parts WHERE part.function_call EXISTS:
+    FOR each tool_call in response.tool_calls:
 
-        tool_name = function_call.name
-        tool_args = function_call.args   // dict
+        tool_call_id = tool_call["id"]      // echoed back in tool_results turn
+        tool_name    = tool_call["name"]
+        tool_args    = tool_call["args"]    // dict
 
         // EXIT TRIGGER
         IF tool_name == "complete_investigation":
@@ -913,7 +968,7 @@ WHILE turn_count < MAX_LOOP_TURNS:
             IF denial_reason != "":
                 result["_meta"] = result.get("_meta", {})
                 result["_meta"]["denial_reason"] = denial_reason
-                // This surfaces in the Brain's function_response turn, giving it
+                // This surfaces in the Brain's tool_results turn, giving it
                 // actionable context to avoid re-proposing the same command.
 
         IF is_denied AND active_hypothesis_ids is non-empty:
@@ -969,20 +1024,20 @@ WHILE turn_count < MAX_LOOP_TURNS:
             })
             save_session()
 
-        // ── BUILD FUNCTION RESPONSE PART ─────────────────────────────
-        function_response_parts.append(
-            genai.types.Part.from_function_response(
-                name     = tool_name,
-                response = result,
-            )
-        )
+        // ── COLLECT TOOL RESULT ───────────────────────────────────────
+        tool_results.append({
+            "id":     tool_call_id,     // must match the tool_call["id"] above
+            "name":   tool_name,
+            "output": result,
+        })
 
     END FOR
 
-    // ── APPEND FUNCTION RESPONSES AS USER TURN ────────────────────────
+    // ── APPEND TOOL RESULTS AS A SINGLE TURN ─────────────────────────
+    // Neutral dict: role="tool_results", results list (one entry per dispatched tool)
     conversation_history.append({
-        "role":  "user",
-        "parts": function_response_parts,
+        "role":    "tool_results",
+        "results": tool_results,
     })
 
     save_session()
@@ -1333,6 +1388,7 @@ PHASE 7: Update ghost_session.json
   "session_id": "ghost_20250115_143022",
   "created_at": "2025-01-15T14:30:22Z",
   "resumed_from": null,
+  "llm_provider": "gemini",
   "model": "gemini-2.0-flash",
   "audit_dir": "./audit/",
   "turn_count": 12,
@@ -1409,7 +1465,8 @@ PHASE 7: Update ghost_session.json
 | `session_id` | string | Unique ID: `ghost_{YYYYMMDD}_{HHMMSS}` | Yes |
 | `created_at` | ISO-8601 | Session creation time | Yes |
 | `resumed_from` | string or null | Prior session ID if this is a resume | Yes |
-| `model` | string | Gemini model name | Yes |
+| `llm_provider` | string | LLM provider used for this session (`gemini` or `anthropic`) | Yes |
+| `model` | string | Model name within the provider (e.g. `gemini-2.0-flash`, `claude-3-5-haiku-20251001`) | Yes |
 | `audit_dir` | string | Path to audit directory | Yes |
 | `turn_count` | integer | Loop turns completed; saved every turn | Yes |
 | `rca_report_path` | string or null | Set after RCA generation | Yes |
@@ -1422,7 +1479,7 @@ PHASE 7: Update ghost_session.json
 | `is_resume` | boolean | True when the session was started with `--resume`; instructs the Brain to run the Re-Validation Protocol | Yes |
 | `_checksum` | string | SHA-256 hex digest of the session JSON content, computed over all fields excluding `_checksum` itself (using `json.dumps(sort_keys=True)`). Recomputed on every `save_session()` call. Verified on `--resume` load to detect accidental corruption or file tampering. Mismatch triggers the `[C]ontinue / [F]resh / [A]bort` prompt in Step 2. | Yes |
 
-**What is NOT in session state:** Raw command output, full JSONL records, Gemini response text, conversation history (reconstructed from JSONL on resume).
+**What is NOT in session state:** Raw command output, full JSONL records, LLM response text, conversation history (reconstructed from JSONL on resume as neutral dicts).
 
 ---
 
@@ -1430,12 +1487,12 @@ PHASE 7: Update ghost_session.json
 
 | Error Condition | Detection | Recovery |
 |-----------------|-----------|----------|
-| **Shell timeout** | `result["error"] == "timeout"` | Inject `_meta.timeout = true` in function_response. Brain re-plans: shorter command, different approach, or pivot to `capture_traffic`. |
+| **Shell timeout** | `result["error"] == "timeout"` | Inject `_meta.timeout = true` in the tool result output. Brain re-plans: shorter command, different approach, or pivot to `capture_traffic`. |
 | **Task FAILED** | `result["status"] == "task_failed"` | Brain may retry `capture_traffic` with shorter `duration_seconds`, or pivot to local-only diagnosis. |
 | **Task TIMED_OUT** | `result["status"] == "task_timed_out"` | Azure resources are auto-cleaned by Orchestrator. Brain pivots to available evidence. |
-| **Gemini API error** | `google.api_core.exceptions.GoogleAPIError` raised | Catch exception. Print error message. Call `save_session()`. Print: "Session saved. Resume with: ghost_agent.py --resume {session_id}". Exit with code 1. |
+| **LLM API error** | Provider SDK exception raised inside `adapter.generate()` — e.g. `google.api_core.exceptions.GoogleAPIError` (Gemini) or `anthropic.APIError` (Anthropic). Rate-limit errors (HTTP 429 / `RESOURCE_EXHAUSTED` / `overloaded_error`) are retried up to 3 times with exponential backoff before surfacing as fatal. | Catch exception. Print `[ERROR] LLM API error: {e}`. Call `save_session()`. Print resume instruction. Exit with code 1. |
 | **KeyboardInterrupt** | `except KeyboardInterrupt` in `finally` block | `save_session()` in `finally`. Print: "Session saved. Resume with: ghost_agent.py --resume {session_id}". Exit gracefully. |
-| **Missing GEMINI_API_KEY** | `os.environ.get("GEMINI_API_KEY")` is empty at startup | Print setup instructions: "Set GEMINI_API_KEY environment variable or add to .env file." Exit with code 1. Do not enter the loop. |
+| **Missing API key** | `os.environ.get("GEMINI_API_KEY")` (or `ANTHROPIC_API_KEY`) is empty at startup for the selected provider | Print setup instructions for the missing key. Exit with code 1. Do not enter the loop. |
 | **Session file corrupted** | `json.JSONDecodeError` when loading `ghost_session.json` | Print: "Warning: session file corrupted." Offer: "[F]resh session / [A]bort". If fresh: create new session. If abort: exit with code 1. |
 | **Session checksum mismatch** | `_checksum` field present in loaded JSON but SHA-256 of remaining fields does not match the stored digest | Print: "Warning: session file checksum mismatch — file may have been modified externally." Offer: "[C]ontinue anyway  [F]resh session  [A]bort". If continue: proceed with a session-level integrity warning logged to the RCA. If fresh: discard and start new. If abort: exit with code 1. |
 | **Audit JSONL missing on resume** | `FileNotFoundError` when opening `shell_audit_{sid}.jsonl` | Warn: "Audit file not found — conversation history cannot be reconstructed." Start with empty history but preserve session metadata. |
@@ -1511,7 +1568,7 @@ H2 CONFIRMED. Generating root cause analysis report.
 | Shell auto-approval | `[Shell] SAFE — auto-approved:` | `[Shell] SAFE — auto-approved: dig...` |
 | HITL prompt | Full box with `┌─┐│└─┘` borders | Blocks until user responds |
 | User prompt | `>` prefix | `>` |
-| Error messages | `[ERROR]` prefix | `[ERROR] Gemini API call failed` |
+| Error messages | `[ERROR]` prefix | `[ERROR] LLM API error: ...` |
 | RCA completion | `══` border lines | `══ RCA REPORT WRITTEN ══` |
 
 ---
@@ -1520,10 +1577,11 @@ H2 CONFIRMED. Generating root cause analysis report.
 
 ```
 nw-forensics/
-├── ghost_agent.py                          ← NEW CLI entrypoint
-├── ghost_session.json                      ← NEW session state (created at first run)
+├── ghost_agent.py                          ← CLI entrypoint (provider-agnostic core loop)
+├── llm_adapter.py                          ← LLM provider adapter (Gemini + Anthropic)
+├── ghost_session.json                      ← Session state (created at first run)
 │
-├── audit/                                  ← NEW shared audit directory
+├── audit/                                  ← shared audit directory
 │   ├── shell_audit_{sid}.jsonl             ← Written by SafeExecShell (append-only)
 │   ├── orchestrator_tasks_{sid}.jsonl      ← Written by CloudOrchestrator (append-only)
 │   └── ghost_rca_{sid}.md                  ← Written by RCA generator on complete_investigation
@@ -1551,12 +1609,113 @@ nw-forensics/
 ghost_agent.py imports:
   from agentic_safety_shell.safe_exec_shell import SafeExecShell, HitlDecision
   from agentic_cloud_orchestrator.cloud_orchestrator import CloudOrchestrator
-  from google import genai
-  from google.genai import types
+  from llm_adapter import create_adapter
   import json, os, sys, argparse, datetime
 
 ghost_agent.py does NOT import:
+  google.genai / google.genai.types  ← all LLM SDK calls are inside llm_adapter.py
+  anthropic                          ← same reason
   subprocess    ← ALL process execution via SafeExecShell
   pcap_forensics  ← invoked via shell.execute(), never imported
   threading, asyncio  ← no background threads (intentional omission)
+
+llm_adapter.py imports:
+  from google import genai                              ← GeminiAdapter only
+  from google.genai import types                        ← GeminiAdapter only
+  import anthropic                                      ← AnthropicAdapter only
+  import json, uuid                                     ← shared utilities
+```
+
+---
+
+## 12. LLM Adapter Design (`llm_adapter.py`)
+
+### 12a. Neutral History Format
+
+The core loop (`_run_loop`) constructs and appends history using plain Python dicts. No LLM SDK types appear above `llm_adapter.py`. The neutral format has four turn types:
+
+```python
+# 1. User text (question or nudge from the loop)
+{"role": "user", "text": "What network problem should I investigate?"}
+
+# 2. Model text only (no tool calls)
+{"role": "model", "text": "NSG rules appear clean. Pivoting to routing."}
+
+# 3. Model with tool calls (text is optional — may be empty string)
+{
+    "role":       "model",
+    "text":       "I'll check the NSG rules.",   # optional reasoning text
+    "tool_calls": [
+        {"id": "tc_0001", "name": "run_shell_cmd", "args": {"command": "az nsg list ...", "reasoning": "..."}}
+    ]
+}
+
+# 4. Tool results (one or more tool results bundled as a single turn)
+{
+    "role": "tool_results",
+    "results": [
+        {"id": "tc_0001", "name": "run_shell_cmd", "output": {"status": "completed", ...}}
+    ]
+}
+```
+
+**`id` field:** Every tool call has an `id`. The `tool_results` turn echoes the same `id` to correlate result with call. For Gemini, the adapter generates a synthetic sequential ID (`tc_0001`, `tc_0002`, …) since Gemini does not natively assign tool call IDs. For Anthropic, the adapter uses the `tool_use_id` from the response as the `id`. The core loop always echoes `tool_call["id"]` into `tool_result["id"]` — it never generates IDs itself.
+
+### 12b. Adapter Interface
+
+```python
+def create_adapter(provider: str, api_key: str, model: str) -> GeminiAdapter | AnthropicAdapter:
+    """Factory. provider must be 'gemini' or 'anthropic'."""
+
+class GeminiAdapter:
+    def convert_tools(self, tool_specs: list[dict]) -> types.Tool:
+        """Converts neutral tool spec dicts → Gemini types.Tool with FunctionDeclarations.
+        All Gemini SDK type construction happens here, inside llm_adapter.py."""
+
+    def generate(self, history: list[dict], tools: types.Tool, system_prompt: str) -> NormalizedResponse:
+        """Converts neutral history → Gemini types.Content list, calls generate_content,
+        converts response → NormalizedResponse. Sets is_empty=True for safety-blocked responses."""
+
+class AnthropicAdapter:
+    def convert_tools(self, tool_specs: list[dict]) -> list[dict]:
+        """Converts neutral tool spec dicts → Anthropic tool format with input_schema.
+        Neutral spec is already JSON Schema; minor structural mapping only (rename 'parameters'
+        key to 'input_schema', ensure 'type' field exists at top level)."""
+
+    def generate(self, history: list[dict], tools: list[dict], system_prompt: str) -> NormalizedResponse:
+        """Converts neutral history → Anthropic messages list, calls messages.create,
+        converts response → NormalizedResponse. Anthropic raises exceptions on errors;
+        is_empty is always False for Anthropic (no blocked-response path)."""
+
+class NormalizedResponse:
+    text: str                        # Brain reasoning text (empty string if none)
+    tool_calls: list[dict]           # [{id, name, args}] — empty list if no tool calls
+    is_empty: bool                   # True only for Gemini safety-blocked responses
+                                     # Anthropic always raises an exception instead
+```
+
+### 12c. Key Conversion Details
+
+**Neutral spec → Gemini `types.Tool`:**
+`GeminiAdapter.convert_tools()` walks each neutral tool spec dict depth-first, converting:
+- `"string"` → `types.Type.STRING`, `"integer"` → `types.Type.INTEGER`, `"boolean"` → `types.Type.BOOLEAN`, `"object"` → `types.Type.OBJECT`, `"array"` → `types.Type.ARRAY`
+- `spec["parameters"]["properties"]` → recursed `types.Schema` with `types={}` sub-schemas
+- `spec["parameters"]["required"]` → `types.Schema.required`
+- `spec["description"]` / per-field `"description"` → passed through
+
+The neutral spec uses OpenAI/Anthropic-style JSON Schema (already the industry-standard format), so Gemini conversion is the only non-trivial direction.
+
+**Anthropic `tool_use_id` correlation:**
+Anthropic assigns each tool call a `tool_use_id` in its response. The `AnthropicAdapter.generate()` stores this directly as `tool_call["id"]` in the normalized response. When the core loop builds the `tool_results` turn, it echoes `tool_call["id"]` into `tool_result["id"]`. When the adapter converts the next `generate()` call's history, it maps `tool_result["id"]` directly to Anthropic's `tool_use_id` field — no separate lookup table needed. `result["id"]` IS the `tool_use_id`. This correctly handles multiple tool calls of the same name in a single turn (each has a distinct `id`).
+
+**`--auto-approve` flag:**
+When passed, the `terminal_hitl_callback` is replaced with an auto-approve callback that logs every approval decision to the audit trail with `action="auto_approved_eval_mode"`. This is evaluation mode only — it must be visible in the audit trail so RCA reports generated in auto-approve runs are labeled as such.
+
+### 12d. File Layout Addition
+
+```
+nw-forensics/
+├── ghost_agent.py       ← modified: imports create_adapter; --llm-provider, --auto-approve flags
+├── llm_adapter.py       ← NEW: GeminiAdapter, AnthropicAdapter, NormalizedResponse, create_adapter
+└── ...
 ```
