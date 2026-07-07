@@ -4,6 +4,8 @@ OS-layer firewall state capture, diff, and explanation for Linux VMs.
 
 Captures `iptables`/`ip6tables` and `nftables` ruleset snapshots from any SSH-accessible or Azure-managed Linux VM, stores them as baselines, and diffs against a previous baseline to detect configuration drift. Supports LLM-powered explanation of firewall state and diffs. Designed to operate standalone or as a tool invoked by the Network Ghost Agent.
 
+> **Explain requires a Gemini key:** the explanation engines (`iptables_explain`, `nftables_explain`) call Gemini directly and need `GEMINI_API_KEY` set — including when the Ghost Agent itself runs with `--llm-provider anthropic`. Snapshot and diff operations do not need any LLM key.
+
 **Status: Active development — 2026-03-18.**
 Fully tested on Azure VMs (iptables-nft backend) and Multipass VMs (iptables-legacy and nftables-native).
 

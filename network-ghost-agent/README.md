@@ -106,6 +106,11 @@ The agent uses `detect_config_drift` to probe iptables/nftables state on the tar
 
 The `explain` mode delegates to the LLM explanation engine (`iptables_explain` or `nftables_explain`) and includes the explanation verbatim in the investigation report.
 
+> **Note:** the explanation engine calls Gemini directly and requires `GEMINI_API_KEY`
+> even when the agent runs with `--llm-provider anthropic`. Without the key, the probe
+> still succeeds and the result carries a structured `explanation_error` explaining the
+> limitation (explain-only calls return an error, since the explanation is the deliverable).
+
 ### Resume an interrupted session
 ```bash
 uv run --python 3.12 python ghost_agent.py --resume <session-id>

@@ -1618,6 +1618,25 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
     return {"status": "success", "pipe_meter_result": summary}
 
 
+def _explain_engine_error() -> str | None:
+    """Preflight for the firewall explanation engine (BUG-05).
+
+    iptables_explain/nftables_explain call Gemini directly and require
+    GEMINI_API_KEY regardless of which --llm-provider runs the Brain. Return
+    an actionable error string when the engine cannot run, else None.
+    """
+    if os.environ.get("GEMINI_API_KEY"):
+        return None
+    return (
+        "explain unavailable: GEMINI_API_KEY is not set. The firewall "
+        "explanation engine (iptables_explain/nftables_explain) calls Gemini "
+        "directly, independent of --llm-provider. Set GEMINI_API_KEY in the "
+        "environment or config.env, or proceed without explain using the "
+        "structured drift/blocking_rules data. Report this limitation to the "
+        "operator verbatim — do not silently retry with explain."
+    )
+
+
 def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
     """Invoke firewall_inspector.py as a subprocess and return the drift result."""
     import subprocess
@@ -1635,8 +1654,13 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         return {"status": "error",
                 "error": "Either is_baseline=true or compare_session_id must be provided"}
 
-    # explain-only mode: no probe, just load existing snapshot and explain it
+    # explain-only mode: no probe, just load existing snapshot and explain it.
+    # The explanation IS the deliverable here — fail loudly if the engine
+    # cannot run rather than returning an empty success.
     if explain_only_session_id:
+        engine_error = _explain_engine_error()
+        if engine_error:
+            return {"status": "error", "error": engine_error}
         audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
         snap_path = Path(audit_dir) / f"{explain_only_session_id}_snapshot.json"
         if not snap_path.exists():
@@ -1821,6 +1845,12 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         except Exception:
             pass
         if tool_args.get("explain", False):
+            engine_error = _explain_engine_error()
+            if engine_error:
+                # The baseline itself succeeded — return it, but surface the
+                # explain failure as a structured error, not a buried warning.
+                result["explanation_error"] = engine_error
+                return result
             try:
                 snap_data = json.loads(snap_path.read_text())
                 rulesets = snap_data.get("rulesets", {})
@@ -1911,6 +1941,12 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
             if isinstance(fam, dict) and "error" not in fam
         )
         if tool_args.get("explain", False):
+            engine_error = _explain_engine_error()
+            if engine_error:
+                # The compare itself succeeded — return the drift data, but
+                # surface the explain failure as a structured error.
+                result["explanation_error"] = engine_error
+                return result
             # Use the full raw drift_by_family (from the artifact file) — not the
             # condensed fam_result — so the explain functions get their expected schema.
             try:
