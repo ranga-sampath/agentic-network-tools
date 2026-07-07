@@ -349,14 +349,26 @@ class AnthropicAdapter:
         """
         if self._anthropic_tools is None:
             self._anthropic_tools = _gemini_tools_to_anthropic(tools)
+            # Prompt caching: the tool schemas and system prompt are identical
+            # on every turn of the investigation loop. A cache_control marker
+            # on the last tool caches the full tool block; one on the system
+            # block caches the system prompt. Cache reads cost ~10% of input
+            # tokens — a large saving over a 50-turn loop.
+            if self._anthropic_tools:
+                self._anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
 
         messages = _gemini_history_to_anthropic(history)
+        system_blocks = [{
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }]
         try:
             response = self._client.messages.create(
                 model      = self._model,
                 messages   = messages,
                 tools      = self._anthropic_tools,
-                system     = system_prompt,
+                system     = system_blocks,
                 max_tokens = self._MAX_TOKENS,
             )
         except Exception as e:

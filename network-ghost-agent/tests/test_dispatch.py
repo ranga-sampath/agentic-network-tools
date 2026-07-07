@@ -140,15 +140,15 @@ def test_D6_complete_investigation_no_shell_or_orch(tmp_path):
         "confidence": "high",
         "root_cause_summary": "Root cause found",
     })
-    client = MagicMock()
-    client.models.generate_content.return_value = response
+    adapter = MagicMock()
+    adapter.generate.return_value = response
 
     ghost_tools = _build_ghost_tools()
     history = []
 
     with patch.object(ghost_agent, "_generate_rca"):
         with patch.object(ghost_agent, "_offer_cleanup_before_rca"):
-            _run_loop(state, history, shell, orch, ghost_tools, client, session_file)
+            _run_loop(state, history, shell, orch, ghost_tools, adapter, session_file)
 
     shell.execute.assert_not_called()
     # Orchestrate should NOT be called for the complete_investigation dispatch
@@ -273,15 +273,15 @@ def test_D10_multiple_function_calls_dispatched(tmp_path):
         "root_cause_summary": "Done",
     })
 
-    client = MagicMock()
-    client.models.generate_content.side_effect = [resp1, resp2]
+    adapter = MagicMock()
+    adapter.generate.side_effect = [resp1, resp2]
 
     ghost_tools = _build_ghost_tools()
     history = []
 
     with patch.object(ghost_agent, "_generate_rca"):
         with patch.object(ghost_agent, "_offer_cleanup_before_rca"):
-            _run_loop(state, history, shell, orch, ghost_tools, client, session_file)
+            _run_loop(state, history, shell, orch, ghost_tools, adapter, session_file)
 
     # shell.execute should have been called twice (for each function_call)
     assert shell.execute.call_count == 2

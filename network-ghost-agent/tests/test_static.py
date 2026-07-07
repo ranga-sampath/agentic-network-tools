@@ -71,22 +71,24 @@ def test_T1_only_allowed_imports():
 
 
 # ---------------------------------------------------------------------------
-# T2: 7 FunctionDeclarations with required fields
+# T2: FunctionDeclaration inventory with required fields
 # ---------------------------------------------------------------------------
 
-def test_T2_nine_function_declarations():
-    """_build_ghost_tools() must return exactly 9 FunctionDeclarations.
+def test_T2_function_declaration_inventory():
+    """_build_ghost_tools() must return exactly the 12 expected FunctionDeclarations.
 
     Original 7: run_shell_cmd, capture_traffic, check_task, cancel_task,
                 cleanup_task, manage_hypotheses, complete_investigation.
     Added in v1.1: run_pipe_meter (use cases G-L: VM-to-VM performance),
                    detect_config_drift (use cases J-K: OS firewall inspection).
     Added in v1.2: detect_effective_network_drift (Azure effective routes + NSG).
+    Added in v1.3: effective_route_inspector (use cases S-T: LPM route verdict),
+                   inspect_nsg (use cases U-V: NSG dual-gate verdict/audit).
     """
     tools = _build_ghost_tools()
     declarations = tools.function_declarations
-    assert len(declarations) == 10, (
-        f"Expected 10 FunctionDeclarations, got {len(declarations)}: "
+    assert len(declarations) == 12, (
+        f"Expected 12 FunctionDeclarations, got {len(declarations)}: "
         f"{[d.name for d in declarations]}"
     )
 
@@ -101,6 +103,8 @@ def test_T2_nine_function_declarations():
         "run_pipe_meter",
         "detect_config_drift",
         "detect_effective_network_drift",
+        "effective_route_inspector",
+        "inspect_nsg",
     }
     actual_names = {d.name for d in declarations}
     assert actual_names == expected_names, (

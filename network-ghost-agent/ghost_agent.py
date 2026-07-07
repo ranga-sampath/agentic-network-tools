@@ -15,6 +15,7 @@ import glob
 import hashlib
 import json
 import os
+import shlex
 import sys
 import time
 from datetime import datetime, timezone
@@ -1242,7 +1243,7 @@ def _run_batch_cleanup(buckets: dict, shell, orchestrator, state: dict, session_
         local_paths = [o.get("path", "") for o in buckets["stale_local_files"] if o.get("path")]
         if local_paths:
             print(f"  Removing {len(local_paths)} stale local file(s)...")
-            quoted = " ".join(f'"{p}"' for p in local_paths)
+            quoted = " ".join(shlex.quote(p) for p in local_paths)
             shell.execute({"command": f"rm -f {quoted}",
                            "reasoning": "Startup batch cleanup: stale local PCAP files"})
     finally:
@@ -1286,7 +1287,7 @@ def _run_interactive_cleanup(buckets: dict, shell, orchestrator, state: dict, se
     for o in buckets["stale_local_files"]:
         path = o.get("path", "")
         if path and _confirm(f"local file {Path(path).name}"):
-            shell.execute({"command": f'rm "{path}"',
+            shell.execute({"command": f'rm {shlex.quote(path)}',
                            "reasoning": f"Remove stale local file: {path}"})
 
 
@@ -1488,6 +1489,29 @@ def _reconstruct_history(audit_dir: str, session_id: str, denial_reasons: dict |
     return history
 
 # ---------------------------------------------------------------------------
+# Subprocess tool handlers — shared artifact discovery
+# ---------------------------------------------------------------------------
+
+def _latest_artifact(audit_dir: str, pattern: str, start_time: float,
+                     exclude_prefixes: tuple[str, ...] = ()) -> Path | None:
+    """Return the newest artifact matching pattern written at/after start_time.
+
+    Subprocess tool handlers discover the artifact their child process wrote by
+    mtime (>= start_time - 1s tolerance for filesystem clock skew), newest last.
+    exclude_prefixes filters out artifacts from other tools that share the same
+    filename suffix in the shared audit directory (e.g. eni_*_snapshot.json
+    written by the effective-network inspector vs firewall snapshots).
+    """
+    candidates = sorted(
+        [p for p in Path(audit_dir).glob(pattern)
+         if p.stat().st_mtime >= start_time - 1
+         and not p.name.startswith(exclude_prefixes)],
+        key=lambda p: p.stat().st_mtime,
+    )
+    return candidates[-1] if candidates else None
+
+
+# ---------------------------------------------------------------------------
 # Pipe Meter handler
 # ---------------------------------------------------------------------------
 
@@ -1551,12 +1575,8 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         return {"status": "error", "error": str(exc)}
 
     # Find result artifact written by THIS run — exclude pre-existing files from prior sessions
-    result_files = sorted(
-        [p for p in Path(audit_dir).glob("*_result.json")
-         if p.stat().st_mtime >= start_time - 1],  # 1s tolerance for filesystem clock skew
-        key=lambda p: p.stat().st_mtime,
-    )
-    if not result_files:
+    result_file = _latest_artifact(audit_dir, "*_result.json", start_time)
+    if result_file is None:
         return {
             "status": "error",
             "error": "pipe_meter did not produce a result artifact (preflight may have failed)",
@@ -1564,7 +1584,7 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         }
 
     try:
-        data = json.loads(result_files[-1].read_text())
+        data = json.loads(result_file.read_text())
     except Exception as exc:
         return {"status": "error", "error": f"Failed to parse result artifact: {exc}"}
 
@@ -1572,7 +1592,7 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         "status":       "success",
         "session_id":   data.get("test_metadata", {}).get("session_id", ""),
         "test_type":    data.get("test_metadata", {}).get("test_type", ""),
-        "artifact":     str(result_files[-1]),
+        "artifact":     str(result_file),
     }
     res = data.get("results", {})
     if res.get("latency_p90") is not None:
@@ -1598,6 +1618,25 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
     return {"status": "success", "pipe_meter_result": summary}
 
 
+def _explain_engine_error() -> str | None:
+    """Preflight for the firewall explanation engine (BUG-05).
+
+    iptables_explain/nftables_explain call Gemini directly and require
+    GEMINI_API_KEY regardless of which --llm-provider runs the Brain. Return
+    an actionable error string when the engine cannot run, else None.
+    """
+    if os.environ.get("GEMINI_API_KEY"):
+        return None
+    return (
+        "explain unavailable: GEMINI_API_KEY is not set. The firewall "
+        "explanation engine (iptables_explain/nftables_explain) calls Gemini "
+        "directly, independent of --llm-provider. Set GEMINI_API_KEY in the "
+        "environment or config.env, or proceed without explain using the "
+        "structured drift/blocking_rules data. Report this limitation to the "
+        "operator verbatim — do not silently retry with explain."
+    )
+
+
 def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
     """Invoke firewall_inspector.py as a subprocess and return the drift result."""
     import subprocess
@@ -1615,8 +1654,13 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         return {"status": "error",
                 "error": "Either is_baseline=true or compare_session_id must be provided"}
 
-    # explain-only mode: no probe, just load existing snapshot and explain it
+    # explain-only mode: no probe, just load existing snapshot and explain it.
+    # The explanation IS the deliverable here — fail loudly if the engine
+    # cannot run rather than returning an empty success.
     if explain_only_session_id:
+        engine_error = _explain_engine_error()
+        if engine_error:
+            return {"status": "error", "error": engine_error}
         audit_dir = ghost_cfg.get("AUDIT_DIR", DEFAULT_AUDIT_DIR)
         snap_path = Path(audit_dir) / f"{explain_only_session_id}_snapshot.json"
         if not snap_path.exists():
@@ -1723,16 +1767,14 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
             pass
 
     if is_baseline:
-        snapshots = sorted(
-            [p for p in Path(audit_dir).glob("*_snapshot.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not snapshots:
+        # eni_ snapshots share the _snapshot.json suffix but belong to the
+        # effective-network inspector — never attribute one to this probe.
+        snap_path = _latest_artifact(audit_dir, "*_snapshot.json", start_time,
+                                     exclude_prefixes=("eni_",))
+        if snap_path is None:
             return {"status": "error",
                     "error": "firewall_inspector did not produce a snapshot artifact",
                     "exit_code": proc.returncode}
-        snap_path = snapshots[-1]
         session_id = snap_path.name.replace("_snapshot.json", "")
         result = {"status": "success", "mode": "baseline",
                   "session_id": session_id, "artifact": str(snap_path)}
@@ -1791,7 +1833,7 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
                         if "INPUT" not in cname and "input" not in cname:
                             continue
                         for r in cdata.get("rules", []):
-                            port = r.get("dst_port") or r.get("dst_port")
+                            port = r.get("dst_port")
                             verdict = r.get("target") or r.get("verdict", "")
                             if port and verdict in ("ACCEPT", "accept", "return"):
                                 inbound_allow_ports.append(port)
@@ -1803,6 +1845,12 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         except Exception:
             pass
         if tool_args.get("explain", False):
+            engine_error = _explain_engine_error()
+            if engine_error:
+                # The baseline itself succeeded — return it, but surface the
+                # explain failure as a structured error, not a buried warning.
+                result["explanation_error"] = engine_error
+                return result
             try:
                 snap_data = json.loads(snap_path.read_text())
                 rulesets = snap_data.get("rulesets", {})
@@ -1818,21 +1866,17 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
                 result["explanation_warning"] = f"explain_snapshot failed: {exc}"
         return result
     else:
-        drifts = sorted(
-            [p for p in Path(audit_dir).glob("*_drift.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not drifts:
+        drift_path = _latest_artifact(audit_dir, "*_drift.json", start_time)
+        if drift_path is None:
             return {"status": "error",
                     "error": "firewall_inspector did not produce a drift artifact",
                     "exit_code": proc.returncode}
         try:
-            data = json.loads(drifts[-1].read_text())
+            data = json.loads(drift_path.read_text())
         except Exception as exc:
             return {"status": "error", "error": f"Failed to parse drift artifact: {exc}"}
 
-        result: dict = {"status": "success", "mode": "compare", "artifact": str(drifts[-1])}
+        result: dict = {"status": "success", "mode": "compare", "artifact": str(drift_path)}
         drift_by_family = data.get("drift_by_family", {})
         for family, fam in drift_by_family.items():
             if not fam or "error" in fam:
@@ -1897,6 +1941,12 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
             if isinstance(fam, dict) and "error" not in fam
         )
         if tool_args.get("explain", False):
+            engine_error = _explain_engine_error()
+            if engine_error:
+                # The compare itself succeeded — return the drift data, but
+                # surface the explain failure as a structured error.
+                result["explanation_error"] = engine_error
+                return result
             # Use the full raw drift_by_family (from the artifact file) — not the
             # condensed fam_result — so the explain functions get their expected schema.
             try:
@@ -2081,16 +2131,11 @@ def _run_effective_network_inspector_handler(ghost_cfg: dict, tool_args: dict) -
             pass
 
     if is_baseline:
-        snapshots = sorted(
-            [p for p in Path(audit_dir).glob("eni_*_snapshot.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not snapshots:
+        snap_path = _latest_artifact(audit_dir, "eni_*_snapshot.json", start_time)
+        if snap_path is None:
             return {"status": "error",
                     "error": "effective_network_inspector did not produce a snapshot artifact",
                     "exit_code": proc.returncode}
-        snap_path  = snapshots[-1]
         session_id = snap_path.name.replace("_snapshot.json", "")
         result: dict = {"status": "success", "mode": "baseline",
                         "session_id": session_id, "artifact": str(snap_path)}
@@ -2101,24 +2146,20 @@ def _run_effective_network_inspector_handler(ghost_cfg: dict, tool_args: dict) -
             pass
         return result
     else:
-        drifts = sorted(
-            [p for p in Path(audit_dir).glob("eni_*_vs_eni_*_diff.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not drifts:
+        drift_path = _latest_artifact(audit_dir, "eni_*_vs_eni_*_diff.json", start_time)
+        if drift_path is None:
             return {"status": "error",
                     "error": "effective_network_inspector did not produce a diff artifact",
                     "exit_code": proc.returncode}
         try:
-            data = json.loads(drifts[-1].read_text())
+            data = json.loads(drift_path.read_text())
         except Exception as exc:
             return {"status": "error", "error": f"Failed to parse drift artifact: {exc}"}
 
         return {
             "status":              "success",
             "mode":                "compare",
-            "artifact":            str(drifts[-1]),
+            "artifact":            str(drift_path),
             "drift_detected":      data.get("drift_detected", False),
             "changes_count":       data.get("changes_count", 0),
             "changes_by_category": data.get("changes_by_category", {}),
@@ -2134,7 +2175,9 @@ def _run_effective_route_inspector_handler(ghost_cfg: dict, tool_args: dict) -> 
     if not eri_path.exists():
         return {"status": "error", "error": f"effective_route_inspector.py not found at {eri_path}"}
 
-    vm_name = tool_args.get("vm_name") or ghost_cfg.get("VM_NAME", "")
+    # vm_name is a required tool parameter; VM_NAME is not a config.env key,
+    # so there is no config fallback — an empty value is an error.
+    vm_name = tool_args.get("vm_name", "")
     if not vm_name:
         return {"status": "error", "error": "vm_name is required for effective_route_inspector"}
 
@@ -2173,17 +2216,12 @@ def _run_effective_route_inspector_handler(ghost_cfg: dict, tool_args: dict) -> 
                 "error": "effective_route_inspector exited with code 2 — no verdict produced",
                 "exit_code": proc.returncode}
 
-    verdicts = sorted(
-        [p for p in Path(audit_dir).glob("rt_*_verdict.json")
-         if p.stat().st_mtime >= start_time - 1],
-        key=lambda p: p.stat().st_mtime,
-    )
-    if not verdicts:
+    verdict_path = _latest_artifact(audit_dir, "rt_*_verdict.json", start_time)
+    if verdict_path is None:
         return {"status": "error",
                 "error": "effective_route_inspector did not produce a verdict artifact",
                 "exit_code": proc.returncode}
 
-    verdict_path = verdicts[-1]
     try:
         verdict_data = json.loads(verdict_path.read_text())
     except Exception as exc:
@@ -2268,8 +2306,9 @@ def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator,
     if tool_name == "inspect_nsg":
         if not ghost_cfg:
             return {"status": "error", "error": "inspect_nsg requires --config to be set at startup"}
+        # vm_name is a required tool parameter; VM_NAME is not a config.env key.
         config = {
-            "vm_name":         tool_args.get("vm_name") or ghost_cfg.get("VM_NAME", ""),
+            "vm_name":         tool_args.get("vm_name", ""),
             "resource_group":  tool_args.get("resource_group") or ghost_cfg.get("RESOURCE_GROUP", ""),
             "src_ip":          tool_args.get("src_ip"),
             "dst_ip":          tool_args.get("dst_ip"),
@@ -2290,10 +2329,17 @@ def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator,
 # ---------------------------------------------------------------------------
 
 def _apply_denial_detection(tool_name: str, tool_args: dict, result: dict, state: dict):
-    """Detect HITL denials, inject _meta hints, and update session state. Mutates in place."""
+    """Detect HITL denials, inject _meta hints, and update session state. Mutates in place.
+
+    task_cancelled counts as a denial only for capture_traffic, where the
+    orchestrator sets CANCELLED exclusively on HITL-denied steps (capture
+    creation / blob download). cancel_task returns task_cancelled as its
+    normal success status — a Brain-initiated cancellation is task management,
+    not operator pushback, and must not advance the denial state machine.
+    """
     is_user_denial = (
         (tool_name == "run_shell_cmd" and result.get("action") == "user_denied")
-        or (tool_name in ("capture_traffic", "cancel_task") and result.get("status") == "task_cancelled")
+        or (tool_name == "capture_traffic" and result.get("status") == "task_cancelled")
     )
 
     # Scope to the attributed hypothesis when provided; fall back to all active ones.
@@ -2460,7 +2506,7 @@ def _read_forensic_report(report_path: str, shell, audit_dir: str) -> str | None
         print(f"[WARN] Blocked read — path outside allowed dirs: {report_path}")
         return None
     result = shell.execute({
-        "command":   f'cat "{report_path}"',
+        "command":   f'cat {shlex.quote(report_path)}',
         "reasoning": "Reading forensic report generated by this session — safe to approve.",
     })
     if result.get("status") == "denied":
@@ -2616,7 +2662,7 @@ def _generate_rca(state: dict, final_args: dict, shell, session_file: str):
         for h in state["hypothesis_log"]:
             audit_lines.append(
                 f"| {h.get('id','')} | {h.get('description','')} "
-                f"| {h.get('state','')} | {h.get('denial_count',0)} |"
+                f"| {h.get('state','')} | {len(h.get('denial_events', []))} |"
             )
         audit_lines.append("")
 
@@ -2724,6 +2770,53 @@ def _offer_cleanup_before_rca(state: dict, orchestrator, session_file: str):
 # Tool-use loop
 # ---------------------------------------------------------------------------
 
+def _recover_empty_response(state: dict, history: list, session_file: str,
+                            consecutive_empty: int, warn_prefix: str, detail,
+                            halt_message: str) -> int:
+    """Shared recovery for empty/blocked LLM responses.
+
+    Handles both empty-candidates and candidate.content=None cases: warns,
+    saves the session, halts after 3 consecutive occurrences, and otherwise
+    appends a synthetic model bridge plus a targeted user nudge so the next
+    API call has a valid alternating history and an explicit directive.
+    Returns the updated consecutive_empty counter.
+    """
+    consecutive_empty += 1
+    print(f"[WARN] {warn_prefix} {consecutive_empty}/3"
+          f" — {detail}. Saving session.")
+    save_session(state, session_file)
+
+    if consecutive_empty >= 3:
+        print(f"[ERROR] {halt_message}")
+        state["abort_reason"] = "empty_response"
+        save_session(state, session_file)
+        print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
+        sys.exit(1)
+
+    history.append(types.Content(
+        role="model", parts=[types.Part(text="[recovering]")]
+    ))
+    pending_tasks = state.get("active_task_ids", [])
+    if pending_tasks:
+        nudge = (
+            f"The capture task {pending_tasks[-1]} is in progress. "
+            f"Call check_task(task_id=\"{pending_tasks[-1]}\") now. "
+            f"Respond with only the function call — no text."
+        )
+    elif state.get("active_hypothesis_ids"):
+        nudge = (
+            "Continue the investigation. Issue the next diagnostic tool call "
+            "with no accompanying text."
+        )
+    else:
+        nudge = (
+            "Call complete_investigation(confidence=\"low\", "
+            "root_cause_summary=\"Investigation halted.\") now."
+        )
+    history.append(types.Content(role="user", parts=[types.Part(text=nudge)]))
+    return consecutive_empty
+
+
 def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adapter, session_file: str,
               effective_system_prompt: str = SYSTEM_PROMPT, ghost_cfg: dict | None = None,
               auto_approve: bool = False):
@@ -2777,51 +2870,17 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adap
                 print(f"Session saved. Resume with: "
                       f"python ghost_agent.py --resume {state['session_id']}")
                 sys.exit(1)
-        if response is None:
-            state["abort_reason"] = "empty_response"
-            save_session(state, session_file)
-            print(f"Session saved. Resume with: python ghost_agent.py --resume {state['session_id']}")
-            sys.exit(1)
 
         if not response.candidates:
-            consecutive_empty += 1
             # Log the block reason if the SDK exposes it
             feedback    = getattr(response, "prompt_feedback", None)
             block_reason = getattr(feedback, "block_reason", None) if feedback else None
-            print(f"[WARN] LLM empty response {consecutive_empty}/3"
-                  f" — {block_reason or 'safety/quota'}. Saving session.")
-            save_session(state, session_file)
-
-            if consecutive_empty >= 3:
-                print("[ERROR] Persistent empty responses after 3 attempts. Halting.")
-                state["abort_reason"] = "empty_response"
-                save_session(state, session_file)
-                print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
-                sys.exit(1)
-
-            # Inject a synthetic bridge + targeted recovery nudge so the next call
-            # has a valid alternating history and an explicit directive.
-            history.append(types.Content(
-                role="model", parts=[types.Part(text="[recovering]")]
-            ))
-            pending_tasks = state.get("active_task_ids", [])
-            if pending_tasks:
-                nudge = (
-                    f"The capture task {pending_tasks[-1]} is in progress. "
-                    f"Call check_task(task_id=\"{pending_tasks[-1]}\") now. "
-                    f"Respond with only the function call — no text."
-                )
-            elif state.get("active_hypothesis_ids"):
-                nudge = (
-                    "Continue the investigation. Issue the next diagnostic tool call "
-                    "with no accompanying text."
-                )
-            else:
-                nudge = (
-                    "Call complete_investigation(confidence=\"low\", "
-                    "root_cause_summary=\"Investigation halted.\") now."
-                )
-            history.append(types.Content(role="user", parts=[types.Part(text=nudge)]))
+            consecutive_empty = _recover_empty_response(
+                state, history, session_file, consecutive_empty,
+                warn_prefix="LLM empty response",
+                detail=block_reason or "safety/quota",
+                halt_message="Persistent empty responses after 3 attempts. Halting.",
+            )
             continue
 
         consecutive_empty = 0  # successful response — reset counter
@@ -2831,35 +2890,12 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adap
         # SAFETY, RECITATION, or other non-STOP values. Treat like empty response.
         if candidate.content is None:
             finish_reason = getattr(candidate, "finish_reason", None)
-            consecutive_empty += 1
-            print(f"[WARN] LLM candidate content is None {consecutive_empty}/3"
-                  f" — finish_reason={finish_reason or 'unknown'}. Saving session.")
-            save_session(state, session_file)
-            if consecutive_empty >= 3:
-                print("[ERROR] Persistent None candidate content after 3 attempts. Halting.")
-                state["abort_reason"] = "empty_response"
-                save_session(state, session_file)
-                print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
-                sys.exit(1)
-            history.append(types.Content(role="model", parts=[types.Part(text="[recovering]")]))
-            pending_tasks = state.get("active_task_ids", [])
-            if pending_tasks:
-                nudge = (
-                    f"The capture task {pending_tasks[-1]} is in progress. "
-                    f"Call check_task(task_id=\"{pending_tasks[-1]}\") now. "
-                    f"Respond with only the function call — no text."
-                )
-            elif state.get("active_hypothesis_ids"):
-                nudge = (
-                    "Continue the investigation. Issue the next diagnostic tool call "
-                    "with no accompanying text."
-                )
-            else:
-                nudge = (
-                    "Call complete_investigation(confidence=\"low\", "
-                    "root_cause_summary=\"Investigation halted.\") now."
-                )
-            history.append(types.Content(role="user", parts=[types.Part(text=nudge)]))
+            consecutive_empty = _recover_empty_response(
+                state, history, session_file, consecutive_empty,
+                warn_prefix="LLM candidate content is None",
+                detail=f"finish_reason={finish_reason or 'unknown'}",
+                halt_message="Persistent None candidate content after 3 attempts. Halting.",
+            )
             continue
 
         fc_parts  = [p for p in candidate.content.parts if p.function_call]
@@ -3005,15 +3041,47 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adap
 # Main
 # ---------------------------------------------------------------------------
 
+def _resolve_provider_and_model(cli_provider: str | None, cli_model: str | None,
+                                state: dict | None) -> tuple[str, str, list[str]]:
+    """Resolve the effective llm_provider and model for this run.
+
+    On resume (state is a loaded session), the session's stored values are the
+    defaults so the investigation continues on the brain that produced its
+    prior evidence; explicit CLI flags override them and produce a warning.
+    The loaded state is updated in place so the session record stays truthful.
+    Returns (provider, model, warnings).
+    """
+    warnings: list[str] = []
+    if state is not None:
+        stored_provider = state.get("llm_provider") or "gemini"
+        stored_model    = state.get("model") or DEFAULT_MODEL
+        if cli_provider and cli_provider != stored_provider:
+            warnings.append(f"[WARN] Overriding session provider '{stored_provider}' "
+                            f"with --llm-provider '{cli_provider}' for this resume.")
+        if cli_model and cli_model != stored_model:
+            warnings.append(f"[WARN] Overriding session model '{stored_model}' "
+                            f"with --model '{cli_model}' for this resume.")
+        provider = cli_provider or stored_provider
+        model    = cli_model or stored_model
+        state["llm_provider"] = provider
+        state["model"]        = model
+    else:
+        provider = cli_provider or "gemini"
+        model    = cli_model or DEFAULT_MODEL
+    return provider, model, warnings
+
+
 def main():
     parser = argparse.ArgumentParser(description="Unified Ghost Agent CLI — AI network forensics investigator")
     parser.add_argument("--resume",             metavar="SESSION_ID", help="Resume a previous session by session_id")
-    parser.add_argument("--llm-provider",       default="gemini", choices=["gemini", "anthropic"],
-                        help="LLM provider for the AI brain (default: gemini)")
+    parser.add_argument("--llm-provider",       default=None, choices=["gemini", "anthropic"],
+                        help="LLM provider for the AI brain (default: gemini; on --resume, "
+                             "the provider stored in the session)")
     parser.add_argument("--auto-approve",       action="store_true",
                         help="Auto-approve RISKY commands without HITL prompts (evaluation mode only)")
-    parser.add_argument("--model",              default=DEFAULT_MODEL,
-                        help=f"Model name for the selected provider (default: {DEFAULT_MODEL})")
+    parser.add_argument("--model",              default=None,
+                        help=f"Model name for the selected provider (default: {DEFAULT_MODEL}; "
+                             "on --resume, the model stored in the session)")
     parser.add_argument("--audit-dir",          default=DEFAULT_AUDIT_DIR, help=f"Shared audit directory (default: {DEFAULT_AUDIT_DIR})")
     parser.add_argument("--storage-auth-mode",  choices=["login", "key"], default="login",
                         help="Azure storage authentication mode (default: login)")
@@ -3058,6 +3126,20 @@ def main():
         if not os.environ.get("ANTHROPIC_API_KEY") and ghost_cfg.get("ANTHROPIC_API_KEY"):
             os.environ["ANTHROPIC_API_KEY"] = ghost_cfg["ANTHROPIC_API_KEY"]
 
+    # Step 1-2: Load the session first (resume only) so its stored llm_provider
+    # and model become the defaults. Explicit CLI flags override the stored
+    # values with a visible warning; without flags, a resumed investigation
+    # continues on the same brain that produced its prior evidence.
+    state = None
+    if args.resume:
+        state = _load_session(SESSION_FILE, args.resume)
+
+    args.llm_provider, args.model, warnings = _resolve_provider_and_model(
+        args.llm_provider, args.model, state
+    )
+    for w in warnings:
+        print(w)
+
     # Resolve API key for the selected provider before any sub-module is instantiated
     if args.llm_provider == "gemini":
         api_key = os.environ.get("GEMINI_API_KEY")
@@ -3083,12 +3165,9 @@ def main():
         print(f"        Specify an appropriate model, e.g. --model claude-3-5-haiku-20251001")
         sys.exit(1)
 
-    # Step 1-2: Load or create session
-    if args.resume:
-        state = _load_session(SESSION_FILE, args.resume)
-        if state is None:          # User chose [F]resh after checksum/parse failure
-            state = _new_session(args.model, args.audit_dir, args.llm_provider)
-    else:
+    # Create a fresh session when not resuming, or when the user chose
+    # [F]resh after a checksum/parse failure during resume.
+    if state is None:
         state = _new_session(args.model, args.audit_dir, args.llm_provider)
 
     audit_dir = state["audit_dir"]

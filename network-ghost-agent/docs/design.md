@@ -716,8 +716,16 @@ COMMON CONTRADICTION PATTERNS:
 ```
 STEP 1: Parse command-line arguments
   ghost_agent.py [--resume <session_id>]
-  Optional: --model <model-name>         (default: gemini-2.0-flash)
-  Optional: --llm-provider {gemini,anthropic}  (default: gemini)
+  Optional: --model <model-name>         (default: gemini-2.0-flash;
+                                          on --resume: the model stored in the session)
+  Optional: --llm-provider {gemini,anthropic}  (default: gemini;
+                                          on --resume: the provider stored in the session)
+  // Provider/model precedence on --resume:
+  //   1. Explicit CLI flag (prints a [WARN] override notice)
+  //   2. llm_provider / model stored in the loaded session
+  //   3. Built-in defaults (legacy sessions without stored fields)
+  // The loaded session is updated to record the effective values, so the
+  // session file always reflects the brain that actually ran.
   Optional: --auto-approve               (skip HITL prompts; evaluation mode only; logged in audit trail)
   Optional: --audit-dir <path>           (default: ./audit/)
 
@@ -952,8 +960,19 @@ WHILE turn_count < MAX_LOOP_TURNS:
             result = {"status": "error", "error": "unknown_tool", "tool": tool_name}
 
         // ── DENIAL DETECTION (per tool result) ───────────────────────
-        is_denied = (result.get("status") in {"denied", "task_cancelled"}
-                     AND result source was a HITL user_denied action)
+        // Denial signals, by tool:
+        //   run_shell_cmd    → action == "user_denied" (HITL [D]eny)
+        //   capture_traffic  → status == "task_cancelled" (the orchestrator
+        //                      sets CANCELLED only on HITL-denied capture
+        //                      creation or blob download)
+        //   cancel_task      → NEVER a denial: task_cancelled is its normal
+        //                      success status. A Brain-initiated cancellation
+        //                      is task management, not operator pushback, and
+        //                      must not advance the denial state machine.
+        is_denied = (
+            (tool_name == "run_shell_cmd" AND result.action == "user_denied")
+            OR (tool_name == "capture_traffic" AND result.status == "task_cancelled")
+        )
 
         IF is_denied:
             // ── DENIAL REASON CAPTURE ─────────────────────────────────
