@@ -2723,6 +2723,53 @@ def _offer_cleanup_before_rca(state: dict, orchestrator, session_file: str):
 # Tool-use loop
 # ---------------------------------------------------------------------------
 
+def _recover_empty_response(state: dict, history: list, session_file: str,
+                            consecutive_empty: int, warn_prefix: str, detail,
+                            halt_message: str) -> int:
+    """Shared recovery for empty/blocked LLM responses.
+
+    Handles both empty-candidates and candidate.content=None cases: warns,
+    saves the session, halts after 3 consecutive occurrences, and otherwise
+    appends a synthetic model bridge plus a targeted user nudge so the next
+    API call has a valid alternating history and an explicit directive.
+    Returns the updated consecutive_empty counter.
+    """
+    consecutive_empty += 1
+    print(f"[WARN] {warn_prefix} {consecutive_empty}/3"
+          f" — {detail}. Saving session.")
+    save_session(state, session_file)
+
+    if consecutive_empty >= 3:
+        print(f"[ERROR] {halt_message}")
+        state["abort_reason"] = "empty_response"
+        save_session(state, session_file)
+        print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
+        sys.exit(1)
+
+    history.append(types.Content(
+        role="model", parts=[types.Part(text="[recovering]")]
+    ))
+    pending_tasks = state.get("active_task_ids", [])
+    if pending_tasks:
+        nudge = (
+            f"The capture task {pending_tasks[-1]} is in progress. "
+            f"Call check_task(task_id=\"{pending_tasks[-1]}\") now. "
+            f"Respond with only the function call — no text."
+        )
+    elif state.get("active_hypothesis_ids"):
+        nudge = (
+            "Continue the investigation. Issue the next diagnostic tool call "
+            "with no accompanying text."
+        )
+    else:
+        nudge = (
+            "Call complete_investigation(confidence=\"low\", "
+            "root_cause_summary=\"Investigation halted.\") now."
+        )
+    history.append(types.Content(role="user", parts=[types.Part(text=nudge)]))
+    return consecutive_empty
+
+
 def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adapter, session_file: str,
               effective_system_prompt: str = SYSTEM_PROMPT, ghost_cfg: dict | None = None,
               auto_approve: bool = False):
@@ -2783,44 +2830,15 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adap
             sys.exit(1)
 
         if not response.candidates:
-            consecutive_empty += 1
             # Log the block reason if the SDK exposes it
             feedback    = getattr(response, "prompt_feedback", None)
             block_reason = getattr(feedback, "block_reason", None) if feedback else None
-            print(f"[WARN] LLM empty response {consecutive_empty}/3"
-                  f" — {block_reason or 'safety/quota'}. Saving session.")
-            save_session(state, session_file)
-
-            if consecutive_empty >= 3:
-                print("[ERROR] Persistent empty responses after 3 attempts. Halting.")
-                state["abort_reason"] = "empty_response"
-                save_session(state, session_file)
-                print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
-                sys.exit(1)
-
-            # Inject a synthetic bridge + targeted recovery nudge so the next call
-            # has a valid alternating history and an explicit directive.
-            history.append(types.Content(
-                role="model", parts=[types.Part(text="[recovering]")]
-            ))
-            pending_tasks = state.get("active_task_ids", [])
-            if pending_tasks:
-                nudge = (
-                    f"The capture task {pending_tasks[-1]} is in progress. "
-                    f"Call check_task(task_id=\"{pending_tasks[-1]}\") now. "
-                    f"Respond with only the function call — no text."
-                )
-            elif state.get("active_hypothesis_ids"):
-                nudge = (
-                    "Continue the investigation. Issue the next diagnostic tool call "
-                    "with no accompanying text."
-                )
-            else:
-                nudge = (
-                    "Call complete_investigation(confidence=\"low\", "
-                    "root_cause_summary=\"Investigation halted.\") now."
-                )
-            history.append(types.Content(role="user", parts=[types.Part(text=nudge)]))
+            consecutive_empty = _recover_empty_response(
+                state, history, session_file, consecutive_empty,
+                warn_prefix="LLM empty response",
+                detail=block_reason or "safety/quota",
+                halt_message="Persistent empty responses after 3 attempts. Halting.",
+            )
             continue
 
         consecutive_empty = 0  # successful response — reset counter
@@ -2830,35 +2848,12 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adap
         # SAFETY, RECITATION, or other non-STOP values. Treat like empty response.
         if candidate.content is None:
             finish_reason = getattr(candidate, "finish_reason", None)
-            consecutive_empty += 1
-            print(f"[WARN] LLM candidate content is None {consecutive_empty}/3"
-                  f" — finish_reason={finish_reason or 'unknown'}. Saving session.")
-            save_session(state, session_file)
-            if consecutive_empty >= 3:
-                print("[ERROR] Persistent None candidate content after 3 attempts. Halting.")
-                state["abort_reason"] = "empty_response"
-                save_session(state, session_file)
-                print(f"Resume with: python ghost_agent.py --resume {state['session_id']}")
-                sys.exit(1)
-            history.append(types.Content(role="model", parts=[types.Part(text="[recovering]")]))
-            pending_tasks = state.get("active_task_ids", [])
-            if pending_tasks:
-                nudge = (
-                    f"The capture task {pending_tasks[-1]} is in progress. "
-                    f"Call check_task(task_id=\"{pending_tasks[-1]}\") now. "
-                    f"Respond with only the function call — no text."
-                )
-            elif state.get("active_hypothesis_ids"):
-                nudge = (
-                    "Continue the investigation. Issue the next diagnostic tool call "
-                    "with no accompanying text."
-                )
-            else:
-                nudge = (
-                    "Call complete_investigation(confidence=\"low\", "
-                    "root_cause_summary=\"Investigation halted.\") now."
-                )
-            history.append(types.Content(role="user", parts=[types.Part(text=nudge)]))
+            consecutive_empty = _recover_empty_response(
+                state, history, session_file, consecutive_empty,
+                warn_prefix="LLM candidate content is None",
+                detail=f"finish_reason={finish_reason or 'unknown'}",
+                halt_message="Persistent None candidate content after 3 attempts. Halting.",
+            )
             continue
 
         fc_parts  = [p for p in candidate.content.parts if p.function_call]
