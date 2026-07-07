@@ -960,8 +960,19 @@ WHILE turn_count < MAX_LOOP_TURNS:
             result = {"status": "error", "error": "unknown_tool", "tool": tool_name}
 
         // ── DENIAL DETECTION (per tool result) ───────────────────────
-        is_denied = (result.get("status") in {"denied", "task_cancelled"}
-                     AND result source was a HITL user_denied action)
+        // Denial signals, by tool:
+        //   run_shell_cmd    → action == "user_denied" (HITL [D]eny)
+        //   capture_traffic  → status == "task_cancelled" (the orchestrator
+        //                      sets CANCELLED only on HITL-denied capture
+        //                      creation or blob download)
+        //   cancel_task      → NEVER a denial: task_cancelled is its normal
+        //                      success status. A Brain-initiated cancellation
+        //                      is task management, not operator pushback, and
+        //                      must not advance the denial state machine.
+        is_denied = (
+            (tool_name == "run_shell_cmd" AND result.action == "user_denied")
+            OR (tool_name == "capture_traffic" AND result.status == "task_cancelled")
+        )
 
         IF is_denied:
             // ── DENIAL REASON CAPTURE ─────────────────────────────────

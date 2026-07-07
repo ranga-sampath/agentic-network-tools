@@ -2293,10 +2293,17 @@ def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator,
 # ---------------------------------------------------------------------------
 
 def _apply_denial_detection(tool_name: str, tool_args: dict, result: dict, state: dict):
-    """Detect HITL denials, inject _meta hints, and update session state. Mutates in place."""
+    """Detect HITL denials, inject _meta hints, and update session state. Mutates in place.
+
+    task_cancelled counts as a denial only for capture_traffic, where the
+    orchestrator sets CANCELLED exclusively on HITL-denied steps (capture
+    creation / blob download). cancel_task returns task_cancelled as its
+    normal success status — a Brain-initiated cancellation is task management,
+    not operator pushback, and must not advance the denial state machine.
+    """
     is_user_denial = (
         (tool_name == "run_shell_cmd" and result.get("action") == "user_denied")
-        or (tool_name in ("capture_traffic", "cancel_task") and result.get("status") == "task_cancelled")
+        or (tool_name == "capture_traffic" and result.get("status") == "task_cancelled")
     )
 
     # Scope to the attributed hypothesis when provided; fall back to all active ones.
