@@ -66,18 +66,18 @@ def test_I1_happy_path_shell_cmd_then_complete(tmp_path):
         "root_cause_summary": "Root cause identified.",
         "recommended_actions": ["Fix firewall rule"],
     })
-    client = MagicMock()
-    client.models.generate_content.side_effect = [resp1, resp2]
+    adapter = MagicMock()
+    adapter.generate.side_effect = [resp1, resp2]
     history = []
 
     with patch.object(ghost_agent, "_generate_rca") as mock_rca:
         with patch.object(ghost_agent, "_offer_cleanup_before_rca"):
-            _run_loop(state, history, shell, orch, ghost_tools, client, session_file)
+            _run_loop(state, history, shell, orch, ghost_tools, adapter, session_file)
 
     # shell.execute called once for run_shell_cmd
     shell.execute.assert_called_once()
-    # generate_content called twice (once per loop turn)
-    assert client.models.generate_content.call_count == 2
+    # adapter.generate called twice (once per loop turn)
+    assert adapter.generate.call_count == 2
     # RCA generated
     mock_rca.assert_called_once()
     # turn_count incremented
@@ -124,8 +124,8 @@ def test_I2_denial_path_three_denials_makes_unverifiable(tmp_path):
         "unverifiable_hypotheses": ["H1"],
     })
 
-    client = MagicMock()
-    client.models.generate_content.side_effect = [
+    adapter = MagicMock()
+    adapter.generate.side_effect = [
         resp_shell, resp_shell, resp_shell, resp_complete
     ]
     history = []
@@ -134,7 +134,7 @@ def test_I2_denial_path_three_denials_makes_unverifiable(tmp_path):
 
     with patch.object(ghost_agent, "_generate_rca"):
         with patch.object(ghost_agent, "_offer_cleanup_before_rca"):
-            _run_loop(state, history, shell, orch, ghost_tools, client, session_file)
+            _run_loop(state, history, shell, orch, ghost_tools, adapter, session_file)
 
     # After 3 denials, H1 must be removed from active_hypothesis_ids
     assert "H1" not in state["active_hypothesis_ids"]

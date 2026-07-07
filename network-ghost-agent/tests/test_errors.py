@@ -34,15 +34,15 @@ def test_E1_keyboard_interrupt_saves_session(tmp_path):
     state, session_file, ghost_tools = _setup(tmp_path)
     shell = MagicMock()
     orch = MagicMock()
-    client = MagicMock()
-    client.models.generate_content.side_effect = KeyboardInterrupt("Interrupted")
+    adapter = MagicMock()
+    adapter.generate.side_effect = KeyboardInterrupt("Interrupted")
     history = []
 
     save_session(state, session_file)
 
     with pytest.raises((KeyboardInterrupt, SystemExit)):
         try:
-            _run_loop(state, history, shell, orch, ghost_tools, client, session_file)
+            _run_loop(state, history, shell, orch, ghost_tools, adapter, session_file)
         except KeyboardInterrupt:
             save_session(state, session_file)
             raise
@@ -96,13 +96,13 @@ def test_E2_google_api_error_saves_and_prints_resume(tmp_path, capsys):
     state, session_file, ghost_tools = _setup(tmp_path)
     shell = MagicMock()
     orch = MagicMock()
-    client = MagicMock()
-    client.models.generate_content.side_effect = Exception("GoogleAPIError: quota exceeded")
+    adapter = MagicMock()
+    adapter.generate.side_effect = Exception("GoogleAPIError: quota exceeded")
     history = []
 
     with patch.object(ghost_agent, "save_session", wraps=ghost_agent.save_session) as mock_save:
         with pytest.raises(SystemExit) as exc:
-            _run_loop(state, history, shell, orch, ghost_tools, client, session_file)
+            _run_loop(state, history, shell, orch, ghost_tools, adapter, session_file)
 
     assert exc.value.code == 1
     assert mock_save.called
