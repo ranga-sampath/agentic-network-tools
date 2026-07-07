@@ -2619,7 +2619,7 @@ def _generate_rca(state: dict, final_args: dict, shell, session_file: str):
         for h in state["hypothesis_log"]:
             audit_lines.append(
                 f"| {h.get('id','')} | {h.get('description','')} "
-                f"| {h.get('state','')} | {h.get('denial_count',0)} |"
+                f"| {h.get('state','')} | {len(h.get('denial_events', []))} |"
             )
         audit_lines.append("")
 
