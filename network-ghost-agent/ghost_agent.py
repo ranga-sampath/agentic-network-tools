@@ -1488,6 +1488,29 @@ def _reconstruct_history(audit_dir: str, session_id: str, denial_reasons: dict |
     return history
 
 # ---------------------------------------------------------------------------
+# Subprocess tool handlers — shared artifact discovery
+# ---------------------------------------------------------------------------
+
+def _latest_artifact(audit_dir: str, pattern: str, start_time: float,
+                     exclude_prefixes: tuple[str, ...] = ()) -> Path | None:
+    """Return the newest artifact matching pattern written at/after start_time.
+
+    Subprocess tool handlers discover the artifact their child process wrote by
+    mtime (>= start_time - 1s tolerance for filesystem clock skew), newest last.
+    exclude_prefixes filters out artifacts from other tools that share the same
+    filename suffix in the shared audit directory (e.g. eni_*_snapshot.json
+    written by the effective-network inspector vs firewall snapshots).
+    """
+    candidates = sorted(
+        [p for p in Path(audit_dir).glob(pattern)
+         if p.stat().st_mtime >= start_time - 1
+         and not p.name.startswith(exclude_prefixes)],
+        key=lambda p: p.stat().st_mtime,
+    )
+    return candidates[-1] if candidates else None
+
+
+# ---------------------------------------------------------------------------
 # Pipe Meter handler
 # ---------------------------------------------------------------------------
 
@@ -1551,12 +1574,8 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         return {"status": "error", "error": str(exc)}
 
     # Find result artifact written by THIS run — exclude pre-existing files from prior sessions
-    result_files = sorted(
-        [p for p in Path(audit_dir).glob("*_result.json")
-         if p.stat().st_mtime >= start_time - 1],  # 1s tolerance for filesystem clock skew
-        key=lambda p: p.stat().st_mtime,
-    )
-    if not result_files:
+    result_file = _latest_artifact(audit_dir, "*_result.json", start_time)
+    if result_file is None:
         return {
             "status": "error",
             "error": "pipe_meter did not produce a result artifact (preflight may have failed)",
@@ -1564,7 +1583,7 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         }
 
     try:
-        data = json.loads(result_files[-1].read_text())
+        data = json.loads(result_file.read_text())
     except Exception as exc:
         return {"status": "error", "error": f"Failed to parse result artifact: {exc}"}
 
@@ -1572,7 +1591,7 @@ def _run_pipe_meter_handler(ghost_cfg: dict, tool_args: dict) -> dict:
         "status":       "success",
         "session_id":   data.get("test_metadata", {}).get("session_id", ""),
         "test_type":    data.get("test_metadata", {}).get("test_type", ""),
-        "artifact":     str(result_files[-1]),
+        "artifact":     str(result_file),
     }
     res = data.get("results", {})
     if res.get("latency_p90") is not None:
@@ -1723,16 +1742,14 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
             pass
 
     if is_baseline:
-        snapshots = sorted(
-            [p for p in Path(audit_dir).glob("*_snapshot.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not snapshots:
+        # eni_ snapshots share the _snapshot.json suffix but belong to the
+        # effective-network inspector — never attribute one to this probe.
+        snap_path = _latest_artifact(audit_dir, "*_snapshot.json", start_time,
+                                     exclude_prefixes=("eni_",))
+        if snap_path is None:
             return {"status": "error",
                     "error": "firewall_inspector did not produce a snapshot artifact",
                     "exit_code": proc.returncode}
-        snap_path = snapshots[-1]
         session_id = snap_path.name.replace("_snapshot.json", "")
         result = {"status": "success", "mode": "baseline",
                   "session_id": session_id, "artifact": str(snap_path)}
@@ -1818,21 +1835,17 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
                 result["explanation_warning"] = f"explain_snapshot failed: {exc}"
         return result
     else:
-        drifts = sorted(
-            [p for p in Path(audit_dir).glob("*_drift.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not drifts:
+        drift_path = _latest_artifact(audit_dir, "*_drift.json", start_time)
+        if drift_path is None:
             return {"status": "error",
                     "error": "firewall_inspector did not produce a drift artifact",
                     "exit_code": proc.returncode}
         try:
-            data = json.loads(drifts[-1].read_text())
+            data = json.loads(drift_path.read_text())
         except Exception as exc:
             return {"status": "error", "error": f"Failed to parse drift artifact: {exc}"}
 
-        result: dict = {"status": "success", "mode": "compare", "artifact": str(drifts[-1])}
+        result: dict = {"status": "success", "mode": "compare", "artifact": str(drift_path)}
         drift_by_family = data.get("drift_by_family", {})
         for family, fam in drift_by_family.items():
             if not fam or "error" in fam:
@@ -2081,16 +2094,11 @@ def _run_effective_network_inspector_handler(ghost_cfg: dict, tool_args: dict) -
             pass
 
     if is_baseline:
-        snapshots = sorted(
-            [p for p in Path(audit_dir).glob("eni_*_snapshot.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not snapshots:
+        snap_path = _latest_artifact(audit_dir, "eni_*_snapshot.json", start_time)
+        if snap_path is None:
             return {"status": "error",
                     "error": "effective_network_inspector did not produce a snapshot artifact",
                     "exit_code": proc.returncode}
-        snap_path  = snapshots[-1]
         session_id = snap_path.name.replace("_snapshot.json", "")
         result: dict = {"status": "success", "mode": "baseline",
                         "session_id": session_id, "artifact": str(snap_path)}
@@ -2101,24 +2109,20 @@ def _run_effective_network_inspector_handler(ghost_cfg: dict, tool_args: dict) -
             pass
         return result
     else:
-        drifts = sorted(
-            [p for p in Path(audit_dir).glob("eni_*_vs_eni_*_diff.json")
-             if p.stat().st_mtime >= start_time - 1],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not drifts:
+        drift_path = _latest_artifact(audit_dir, "eni_*_vs_eni_*_diff.json", start_time)
+        if drift_path is None:
             return {"status": "error",
                     "error": "effective_network_inspector did not produce a diff artifact",
                     "exit_code": proc.returncode}
         try:
-            data = json.loads(drifts[-1].read_text())
+            data = json.loads(drift_path.read_text())
         except Exception as exc:
             return {"status": "error", "error": f"Failed to parse drift artifact: {exc}"}
 
         return {
             "status":              "success",
             "mode":                "compare",
-            "artifact":            str(drifts[-1]),
+            "artifact":            str(drift_path),
             "drift_detected":      data.get("drift_detected", False),
             "changes_count":       data.get("changes_count", 0),
             "changes_by_category": data.get("changes_by_category", {}),
@@ -2173,17 +2177,12 @@ def _run_effective_route_inspector_handler(ghost_cfg: dict, tool_args: dict) -> 
                 "error": "effective_route_inspector exited with code 2 — no verdict produced",
                 "exit_code": proc.returncode}
 
-    verdicts = sorted(
-        [p for p in Path(audit_dir).glob("rt_*_verdict.json")
-         if p.stat().st_mtime >= start_time - 1],
-        key=lambda p: p.stat().st_mtime,
-    )
-    if not verdicts:
+    verdict_path = _latest_artifact(audit_dir, "rt_*_verdict.json", start_time)
+    if verdict_path is None:
         return {"status": "error",
                 "error": "effective_route_inspector did not produce a verdict artifact",
                 "exit_code": proc.returncode}
 
-    verdict_path = verdicts[-1]
     try:
         verdict_data = json.loads(verdict_path.read_text())
     except Exception as exc:
