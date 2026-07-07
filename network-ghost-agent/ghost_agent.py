@@ -1809,7 +1809,7 @@ def _run_firewall_inspector_handler(ghost_cfg: dict, tool_args: dict) -> dict:
                         if "INPUT" not in cname and "input" not in cname:
                             continue
                         for r in cdata.get("rules", []):
-                            port = r.get("dst_port") or r.get("dst_port")
+                            port = r.get("dst_port")
                             verdict = r.get("target") or r.get("verdict", "")
                             if port and verdict in ("ACCEPT", "accept", "return"):
                                 inbound_allow_ports.append(port)
@@ -2139,7 +2139,9 @@ def _run_effective_route_inspector_handler(ghost_cfg: dict, tool_args: dict) -> 
     if not eri_path.exists():
         return {"status": "error", "error": f"effective_route_inspector.py not found at {eri_path}"}
 
-    vm_name = tool_args.get("vm_name") or ghost_cfg.get("VM_NAME", "")
+    # vm_name is a required tool parameter; VM_NAME is not a config.env key,
+    # so there is no config fallback — an empty value is an error.
+    vm_name = tool_args.get("vm_name", "")
     if not vm_name:
         return {"status": "error", "error": "vm_name is required for effective_route_inspector"}
 
@@ -2268,8 +2270,9 @@ def _dispatch_tool(tool_name: str, tool_args: dict, shell, orchestrator,
     if tool_name == "inspect_nsg":
         if not ghost_cfg:
             return {"status": "error", "error": "inspect_nsg requires --config to be set at startup"}
+        # vm_name is a required tool parameter; VM_NAME is not a config.env key.
         config = {
-            "vm_name":         tool_args.get("vm_name") or ghost_cfg.get("VM_NAME", ""),
+            "vm_name":         tool_args.get("vm_name", ""),
             "resource_group":  tool_args.get("resource_group") or ghost_cfg.get("RESOURCE_GROUP", ""),
             "src_ip":          tool_args.get("src_ip"),
             "dst_ip":          tool_args.get("dst_ip"),
@@ -2824,11 +2827,6 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adap
                 print(f"Session saved. Resume with: "
                       f"python ghost_agent.py --resume {state['session_id']}")
                 sys.exit(1)
-        if response is None:
-            state["abort_reason"] = "empty_response"
-            save_session(state, session_file)
-            print(f"Session saved. Resume with: python ghost_agent.py --resume {state['session_id']}")
-            sys.exit(1)
 
         if not response.candidates:
             # Log the block reason if the SDK exposes it
