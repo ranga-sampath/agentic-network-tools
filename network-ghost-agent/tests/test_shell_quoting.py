@@ -43,7 +43,6 @@ def test_read_forensic_report_quotes_path(tmp_path):
     assert parsed[0] == "cat"
     assert parsed[1] == str(report)
     assert len(parsed) == 2
-    assert ";" not in parsed[1] or parsed[1] == str(report)
 
 
 def test_read_forensic_report_plain_path_unchanged(tmp_path):

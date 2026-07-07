@@ -31,10 +31,11 @@ def test_successful_cancel_task_does_not_increment_denials():
                  "hypothesis_id": "H1"}
 
     ghost_agent.terminal_hitl_callback.captured_reason = ""
-    _apply_denial_detection("cancel_task", tool_args, _cancel_result(), state)
+    result = _cancel_result()
+    _apply_denial_detection("cancel_task", tool_args, result, state)
 
     assert state["denial_tracker"].get("H1", 0) == 0
-    assert "_meta" not in _cancel_result()
+    assert "_meta" not in result
     h1 = state["hypothesis_log"][0]
     assert h1["denial_events"] == []
 
