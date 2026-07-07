@@ -2998,15 +2998,47 @@ def _run_loop(state: dict, history: list, shell, orchestrator, ghost_tools, adap
 # Main
 # ---------------------------------------------------------------------------
 
+def _resolve_provider_and_model(cli_provider: str | None, cli_model: str | None,
+                                state: dict | None) -> tuple[str, str, list[str]]:
+    """Resolve the effective llm_provider and model for this run.
+
+    On resume (state is a loaded session), the session's stored values are the
+    defaults so the investigation continues on the brain that produced its
+    prior evidence; explicit CLI flags override them and produce a warning.
+    The loaded state is updated in place so the session record stays truthful.
+    Returns (provider, model, warnings).
+    """
+    warnings: list[str] = []
+    if state is not None:
+        stored_provider = state.get("llm_provider") or "gemini"
+        stored_model    = state.get("model") or DEFAULT_MODEL
+        if cli_provider and cli_provider != stored_provider:
+            warnings.append(f"[WARN] Overriding session provider '{stored_provider}' "
+                            f"with --llm-provider '{cli_provider}' for this resume.")
+        if cli_model and cli_model != stored_model:
+            warnings.append(f"[WARN] Overriding session model '{stored_model}' "
+                            f"with --model '{cli_model}' for this resume.")
+        provider = cli_provider or stored_provider
+        model    = cli_model or stored_model
+        state["llm_provider"] = provider
+        state["model"]        = model
+    else:
+        provider = cli_provider or "gemini"
+        model    = cli_model or DEFAULT_MODEL
+    return provider, model, warnings
+
+
 def main():
     parser = argparse.ArgumentParser(description="Unified Ghost Agent CLI — AI network forensics investigator")
     parser.add_argument("--resume",             metavar="SESSION_ID", help="Resume a previous session by session_id")
-    parser.add_argument("--llm-provider",       default="gemini", choices=["gemini", "anthropic"],
-                        help="LLM provider for the AI brain (default: gemini)")
+    parser.add_argument("--llm-provider",       default=None, choices=["gemini", "anthropic"],
+                        help="LLM provider for the AI brain (default: gemini; on --resume, "
+                             "the provider stored in the session)")
     parser.add_argument("--auto-approve",       action="store_true",
                         help="Auto-approve RISKY commands without HITL prompts (evaluation mode only)")
-    parser.add_argument("--model",              default=DEFAULT_MODEL,
-                        help=f"Model name for the selected provider (default: {DEFAULT_MODEL})")
+    parser.add_argument("--model",              default=None,
+                        help=f"Model name for the selected provider (default: {DEFAULT_MODEL}; "
+                             "on --resume, the model stored in the session)")
     parser.add_argument("--audit-dir",          default=DEFAULT_AUDIT_DIR, help=f"Shared audit directory (default: {DEFAULT_AUDIT_DIR})")
     parser.add_argument("--storage-auth-mode",  choices=["login", "key"], default="login",
                         help="Azure storage authentication mode (default: login)")
@@ -3051,6 +3083,20 @@ def main():
         if not os.environ.get("ANTHROPIC_API_KEY") and ghost_cfg.get("ANTHROPIC_API_KEY"):
             os.environ["ANTHROPIC_API_KEY"] = ghost_cfg["ANTHROPIC_API_KEY"]
 
+    # Step 1-2: Load the session first (resume only) so its stored llm_provider
+    # and model become the defaults. Explicit CLI flags override the stored
+    # values with a visible warning; without flags, a resumed investigation
+    # continues on the same brain that produced its prior evidence.
+    state = None
+    if args.resume:
+        state = _load_session(SESSION_FILE, args.resume)
+
+    args.llm_provider, args.model, warnings = _resolve_provider_and_model(
+        args.llm_provider, args.model, state
+    )
+    for w in warnings:
+        print(w)
+
     # Resolve API key for the selected provider before any sub-module is instantiated
     if args.llm_provider == "gemini":
         api_key = os.environ.get("GEMINI_API_KEY")
@@ -3076,12 +3122,9 @@ def main():
         print(f"        Specify an appropriate model, e.g. --model claude-3-5-haiku-20251001")
         sys.exit(1)
 
-    # Step 1-2: Load or create session
-    if args.resume:
-        state = _load_session(SESSION_FILE, args.resume)
-        if state is None:          # User chose [F]resh after checksum/parse failure
-            state = _new_session(args.model, args.audit_dir, args.llm_provider)
-    else:
+    # Create a fresh session when not resuming, or when the user chose
+    # [F]resh after a checksum/parse failure during resume.
+    if state is None:
         state = _new_session(args.model, args.audit_dir, args.llm_provider)
 
     audit_dir = state["audit_dir"]

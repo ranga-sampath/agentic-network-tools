@@ -111,6 +111,10 @@ The `explain` mode delegates to the LLM explanation engine (`iptables_explain` o
 uv run --python 3.12 python ghost_agent.py --resume <session-id>
 ```
 
+A resumed session continues on the `--llm-provider` and `--model` stored in the session file —
+no need to repeat the flags you started with. Passing either flag explicitly on resume overrides
+the stored value (a `[WARN]` notice is printed) and the session record is updated to match.
+
 ---
 
 ## Demo Scripts
